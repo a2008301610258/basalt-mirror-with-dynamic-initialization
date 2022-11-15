@@ -36,6 +36,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/vi_estimator/vio_estimator.h>
 
 #include <basalt/vi_estimator/sqrt_keypoint_vio.h>
+#include <basalt/vi_estimator/sqrt_keypoint_vio_init.h>
 #include <basalt/vi_estimator/sqrt_keypoint_vo.h>
 
 namespace basalt {
@@ -49,7 +50,8 @@ VioEstimatorBase::Ptr factory_helper(const VioConfig& config,
   VioEstimatorBase::Ptr res;
 
   if (use_imu) {
-    res.reset(new SqrtKeypointVioEstimator<Scalar>(g, cam, config));
+//    res.reset(new SqrtKeypointVioEstimator<Scalar>(g, cam, config));
+    res.reset(new SqrtKeypointVioInitEstimator<Scalar>(g, cam, config));
 
   } else {
     res.reset(new SqrtKeypointVoEstimator<Scalar>(cam, config));

@@ -65,6 +65,10 @@ class BundleAdjustmentBase {
       PoseStateWithLin<Scalar>& state_t,
       const std::vector<std::vector<int>>& connected_obs) const;
 
+  void optimize_single_frame_pose(
+      PoseVelBiasStateWithLin<Scalar>& state_t,
+      const std::vector<std::vector<int>>& connected_obs) const;
+
   template <class Scalar2>
   void get_current_points(
       Eigen::aligned_vector<Eigen::Matrix<Scalar2, 3, 1>>& points,

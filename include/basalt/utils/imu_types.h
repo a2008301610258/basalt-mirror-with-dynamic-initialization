@@ -91,6 +91,21 @@ struct PoseVelBiasStateWithLin {
     state_current = other;
   }
 
+  explicit PoseVelBiasStateWithLin(const PoseStateWithLin<Scalar>& other,
+                                   const Vec3& vel_w_i,
+                                   const Vec3& bias_gyro, const Vec3& bias_accel)
+      : linearized(other.linearized),
+        state_linearized(other.getT_ns(),
+                         other.getPoseLin(),
+                         vel_w_i,
+                         bias_gyro,
+                         bias_accel) {
+    delta.setZero();
+    delta.template head<6>() = other.delta;
+    state_current = state_linearized;
+    state_current.applyInc(delta);
+  }
+
   template <class Scalar2>
   PoseVelBiasStateWithLin<Scalar2> cast() const {
     PoseVelBiasStateWithLin<Scalar2> a;
@@ -108,7 +123,7 @@ struct PoseVelBiasStateWithLin {
 
   void setLinTrue() {
     linearized = true;
-    BASALT_ASSERT(delta.isApproxToConstant(0));
+//    BASALT_ASSERT(delta.isApproxToConstant(0));
     state_current = state_linearized;
   }
 
@@ -119,6 +134,16 @@ struct PoseVelBiasStateWithLin {
       delta += inc;
       state_current = state_linearized;
       state_current.applyInc(delta);
+    }
+  }
+
+  void applyIncPose(const Eigen::Matrix<Scalar, POSE_SIZE, 1>& inc) {
+    if (!linearized) {
+      PoseState<Scalar>::incPose(inc, state_linearized.T_w_i);
+    } else {
+      delta.template head<6>() += inc;
+      state_current = state_linearized;
+      PoseState<Scalar>::incPose(delta.template head<6>(), state_current.T_w_i);
     }
   }
 
@@ -237,6 +262,11 @@ struct PoseStateWithLin {
 
   inline const SE3& getPoseLin() const { return pose_linearized.T_w_i; }
 
+  void setTransformToWorld(SE3 transform) {
+    T_w_i_current = transform * T_w_i_current;
+    pose_linearized.T_w_i = transform * pose_linearized.T_w_i;
+  }
+
   inline void applyInc(const VecN& inc) {
     if (!linearized) {
       PoseState<Scalar>::incPose(inc, pose_linearized.T_w_i);
@@ -277,6 +307,10 @@ struct PoseStateWithLin {
   // give access to private members for cast() implementation
   template <class>
   friend struct PoseStateWithLin;
+
+  // give access to private members for cast() implementation
+  template <class>
+  friend struct PoseVelBiasStateWithLin;
 
   friend class cereal::access;
 

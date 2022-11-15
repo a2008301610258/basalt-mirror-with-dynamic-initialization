@@ -137,6 +137,100 @@ void BundleAdjustmentBase<Scalar>::optimize_single_frame_pose(
   // std::cout << "=============================" << std::endl;
 }
 
+template <class Scalar>
+void BundleAdjustmentBase<Scalar>::optimize_single_frame_pose(
+    PoseVelBiasStateWithLin<Scalar>& state_t,
+    const std::vector<std::vector<int>>& connected_obs) const {
+  const int num_iter = 2;
+
+  struct AbsLinData {
+    Mat4 T_t_h;
+    Mat6 d_rel_d_t;
+
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+  };
+
+  /// G-N method to optimize current frame's state
+  for (int iter = 0; iter < num_iter; iter++) {
+    Scalar error = 0;
+    Mat6 Ht;
+    Vec6 bt;
+
+    Ht.setZero();
+    bt.setZero();
+
+    std::unordered_map<std::pair<TimeCamId, TimeCamId>, AbsLinData> abs_lin_data;
+
+    for (size_t cam_id = 0; cam_id < connected_obs.size(); cam_id++) {
+      TimeCamId tcid_t(state_t.getT_ns(), cam_id);
+      for (const auto& lm_id : connected_obs[cam_id]) {
+        const Keypoint<Scalar>& kpt_pos = lmdb.getLandmark(lm_id);
+        std::pair<TimeCamId, TimeCamId> map_key(kpt_pos.host_kf_id, tcid_t);
+
+        if (abs_lin_data.count(map_key) == 0) {
+          const PoseVelBiasStateWithLin<Scalar>& state_h =
+              frame_states.at(kpt_pos.host_kf_id.frame_id);
+
+          BASALT_ASSERT(kpt_pos.host_kf_id.frame_id != state_t.getT_ns());
+
+          AbsLinData& ald = abs_lin_data[map_key];
+
+          SE3 T_t_h_sophus = computeRelPose<Scalar>(
+              state_h.getState().T_w_i, calib.T_i_c[kpt_pos.host_kf_id.cam_id],
+              state_t.getState().T_w_i, calib.T_i_c[cam_id], nullptr, &ald.d_rel_d_t);
+          ald.T_t_h = T_t_h_sophus.matrix();
+        }
+      }
+    }
+
+    for (size_t cam_id = 0; cam_id < connected_obs.size(); cam_id++) {
+      std::visit(
+          [&](const auto& cam) {
+            for (const auto& lm_id : connected_obs[cam_id]) {
+              TimeCamId tcid_t(state_t.getT_ns(), cam_id);
+
+              const Keypoint<Scalar>& kpt_pos = lmdb.getLandmark(lm_id);
+              const Vec2& kpt_obs = kpt_pos.obs.at(tcid_t);
+              const AbsLinData& ald =
+                  abs_lin_data.at(std::make_pair(kpt_pos.host_kf_id, tcid_t));
+
+              Vec2 res;
+              Eigen::Matrix<Scalar, 2, POSE_SIZE> d_res_d_xi;
+              bool valid = linearizePoint(kpt_obs, kpt_pos, ald.T_t_h, cam, res,
+                                          &d_res_d_xi);
+
+              if (valid) {
+                Scalar e = res.norm();
+                Scalar huber_weight =
+                    e < huber_thresh ? Scalar(1.0) : huber_thresh / e;
+                Scalar obs_weight = huber_weight / (obs_std_dev * obs_std_dev);
+
+                error += Scalar(0.5) * (2 - huber_weight) * obs_weight *
+                         res.transpose() * res;
+
+                d_res_d_xi *= ald.d_rel_d_t;
+
+                Ht.noalias() += d_res_d_xi.transpose() * d_res_d_xi;
+                bt.noalias() += d_res_d_xi.transpose() * res;
+              }
+            }
+          },
+          calib.intrinsics[cam_id].variant);
+    }
+
+    // Add small damping for GN
+    constexpr Scalar lambda = 1e-6;
+    Vec6 diag = Ht.diagonal();
+    diag *= lambda;
+    Ht.diagonal().array() += diag.array().max(lambda);
+
+    // std::cout << "pose opt error " << error << std::endl;
+    Vec6 inc = -Ht.ldlt().solve(bt);
+    state_t.applyIncPose(inc);
+  }
+  // std::cout << "=============================" << std::endl;
+}
+
 template <class Scalar_>
 void BundleAdjustmentBase<Scalar_>::computeError(
     Scalar& error,
