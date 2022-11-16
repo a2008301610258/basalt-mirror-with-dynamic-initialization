@@ -1,3 +1,13 @@
+## Basalt with dynamic initialization
+
+This work extends Basalt with a dynamic initialization to obtain good initial values for the inertial values: body velocities, gravity direction, and IMU bias. 
+
+Similar to ORBSLAM3, we first use a vision-only MAP estimation to obtain the pose trajectory. Next, an inertial-only MAP estimation is adopted. Then, we perform a joint visual-inertial optimization for further refining the solution. Finally, velocities and IMU biases are marginalized.
+
+![teaser](doc/img/tum_vi_ate1.png)
+
+-------------------------- separation line------------------------------
+
 [![pipeline status](https://gitlab.com/VladyslavUsenko/basalt/badges/master/pipeline.svg)](https://gitlab.com/VladyslavUsenko/basalt/commits/master)
 
 ## Basalt

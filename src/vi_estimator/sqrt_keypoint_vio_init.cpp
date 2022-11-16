@@ -512,17 +512,16 @@ bool SqrtKeypointVioInitEstimator<Scalar_>::measure(
 
   optimize_and_marg(num_points_connected, lost_landmaks);
 
-  if (out_state_queue) {
+  if (out_state_queue && is_system_initialized) {
     PoseVelBiasStateWithLin p = frame_states.at(last_state_t_ns);
 
     typename PoseVelBiasState<double>::Ptr data(
         new PoseVelBiasState<double>(p.getState().template cast<double>()));
 
-    data->is_system_inited = is_system_initialized;
     out_state_queue->push(data);
   }
 
-  if (out_vis_queue) {
+  if (out_vis_queue && is_system_initialized) {
     VioVisualizationData::Ptr data(new VioVisualizationData);
 
     data->t_ns = last_state_t_ns;
@@ -2909,7 +2908,7 @@ void SqrtKeypointVioInitEstimator<Scalar_>::optimize_and_marg(
       std::cout << "frame_poses size: " << frame_poses.size() << std::endl;
       std::cout << "frame_states size: " << frame_states.size() << std::endl;
       std::cout << "marginalize_imu" << std::endl;
-      
+
       /// Marg the vel and bias
       marginalize_imu();
 
