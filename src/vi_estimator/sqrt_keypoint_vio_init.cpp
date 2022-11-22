@@ -209,10 +209,13 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg
         Vec3 vel_w_i_init;
         vel_w_i_init.setZero();
 
-//        T_w_i_init.setQuaternion(Eigen::Quaternion<Scalar>::FromTwoVectors(
-//            data->accel, Vec3::UnitZ()));
+        /// init pose
+        T_w_i_init.setQuaternion(Eigen::Quaternion<Scalar>::FromTwoVectors(data->accel, Vec3::UnitZ()));
 
-        T_w_i_init.setQuaternion(Eigen::Quaternion<Scalar>::Identity());
+        T_w_y_init.setQuaternion(Eigen::Quaternion<Scalar>::FromTwoVectors(data->accel, Vec3::UnitZ()));
+        std::cout << "T_w_y_init: " << std::endl << T_w_y_init.so3().matrix() << std::endl;
+
+//        T_w_i_init.setQuaternion(Eigen::Quaternion<Scalar>::Identity());
 
         last_state_t_ns = curr_frame->t_ns;
         imu_meas[last_state_t_ns] =
@@ -512,7 +515,7 @@ bool SqrtKeypointVioInitEstimator<Scalar_>::measure(
 
   optimize_and_marg(num_points_connected, lost_landmaks);
 
-  if (out_state_queue && is_system_initialized) {
+  if (out_state_queue) {
     PoseVelBiasStateWithLin p = frame_states.at(last_state_t_ns);
 
     typename PoseVelBiasState<double>::Ptr data(
@@ -521,7 +524,7 @@ bool SqrtKeypointVioInitEstimator<Scalar_>::measure(
     out_state_queue->push(data);
   }
 
-  if (out_vis_queue && is_system_initialized) {
+  if (out_vis_queue) {
     VioVisualizationData::Ptr data(new VioVisualizationData);
 
     data->t_ns = last_state_t_ns;
@@ -2582,6 +2585,8 @@ template <class Scalar_>
 void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<int64_t, Vec3>& vel, Vec3 &bg, Vec3 &ba) {
 
   /// parameters
+  bg = Vec3::Zero();
+  ba = Vec3::Zero();
   Eigen::Matrix3<Scalar> Rwg;  /// imu to world (2 Dof)
   Eigen::Vector3<Scalar> dirG;
   dirG.setZero();
@@ -2594,6 +2599,7 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
     dirG -= it_frame2->second.getPose().so3().matrix() * it_meas->second.getDeltaState().vel_w_i;
     vel[it_frame2->first] = (it_frame2->second.getPose().translation() -
                              it_frame1->second.getPose().translation()) / (it_meas->second.get_dt_ns() * 1.0e-9);
+//    vel[it_frame2->first] = Vec3::Zero();
 
     std::cout << "imu: " << it_meas->first << " size: " << it_meas->second.get_imu_meas().size() << " dt: " << it_meas->second.get_dt_ns() * 1.0e-9 << std::endl;
   }
@@ -2609,31 +2615,41 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
   const float ang = std::acos(cosg);
   Vec3 vzg = v * ang / nv;
   Rwg = Sophus::SO3<Scalar>::exp(vzg).matrix();
+  Rwg = Eigen::Matrix3<Scalar>::Identity();
 
-//  Rwg = Eigen::Matrix<Scalar, 3, 3>::Identity(); //test
+  std::cout << "vzg: " << std::endl << Sophus::SO3<Scalar>::exp(vzg).matrix() << std::endl;
+
+  std::cout << "T_w_y_init: " << std::endl << T_w_y_init.so3().matrix() << std::endl;
+
+//  Rwg = T_w_y_init.so3().matrix().inverse();
+
+////  Rwg = Eigen::Matrix<Scalar, 3, 3>::Identity(); //test
   std::cout << "Rwg: " << Rwg << std::endl;
-//  std::cout << "vel size: " << vel.size() << std::endl;  /// size same with frame_poses
-//  for (auto it = vel.begin(); it != vel.end(); ++it) {
-//    std::cout << it->first << " " << it->second << std::endl;
-//  }
+  std::cout << "vel size: " << vel.size() << std::endl;  /// size same with frame_poses
+  for (auto it = vel.begin(); it != vel.end(); ++it) {
+    std::cout << it->first << " " << it->second << std::endl;
+  }
 
   /// Inertial-only Optimization
-  const int num_iter = 2;
-  const int num_meas = 9 * imu_meas.size() + 6;  /// 9 * (dp, dr, dv) + bias_prior
-  const int num_para = 2 + 6 + 3 * vel.size();  /// Rwg(2dof) + bg + ba + vels
+  const int num_iter = 4;
+  const int num_para = 6 + 2 + 3 * vel.size();  /// Rwg(2dof) + bg + ba + vels
+//  const int num_para = 6 + 3 * vel.size();  /// bg + ba + vels
 
-  const Scalar prior_bg = 1e-2;
-  const Scalar prior_ba = 1e-5;
+  const Scalar prior_bg = 1e-10;
+  const Scalar prior_ba = 1e-8;
+
+  std::cout << "prior_bg: " << prior_bg << " prior_ba: " << prior_ba << std::endl;
 
   auto G_I = basalt::constants::g.cast<Scalar>();
 
   for (int iter = 0; iter < num_iter; iter++) {
-    Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> Jp;
-    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> r;
-    Jp.resize(num_meas, num_para);
-    r.resize(num_meas);
-    Jp.setZero();
-    r.setZero();
+
+    MatX H;
+    VecX b;
+    H.setZero(num_para, num_para);
+    b.setZero(num_para);
+
+    ///////////////////////// imu preintegration  /////////////////////////////
 
     int k = 0;
     auto it_pose0 = frame_poses.begin();
@@ -2643,9 +2659,25 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
     auto it_vel0 = vel.begin();
     auto it_vel1 = vel.begin();
     it_vel1++;
-
     for (auto it = imu_meas.begin(); it != imu_meas.end(); ++it, ++it_pose0, ++it_pose1, ++it_vel0, ++it_vel1) {
+
+      BASALT_ASSERT(it_pose0->first == it_vel0->first);
+      BASALT_ASSERT(it_pose1->first == it_vel1->first);
+      BASALT_ASSERT(it->first == it_pose0->first);
+
+      /// x (14 * 1): bg, ba, Rwg, v0, v1
+      MatX H1;
+      VecX b1;
+      H1.setZero(14, 14);
+      b1.setZero(14);
+
+      MatX Jp1;
+      Jp1.setZero(9, 14);
+      VecX r1;
+      r1.setZero(9);
+
       auto imu_m = it->second;
+
       Scalar dt = imu_m.get_dt_ns() * Scalar(1e-9);
 
       VecN bg_diff;
@@ -2655,10 +2687,10 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
 
       BASALT_ASSERT(ba_diff.template segment<3>(3).isApproxToConstant(0));
 
-      Vec3 g = Rwg * G_I;
+      Vec3 g_G = Rwg * G_I;
       Eigen::Matrix<Scalar, 3, 3> R0_inv = it_pose0->second.getPose().so3().inverse().matrix();
       Vec3 tmp = R0_inv * (it_pose1->second.getPose().translation() - it_pose0->second.getPose().translation() -
-                           it_vel0->second * dt - Scalar(0.5) * g * dt * dt);
+                           it_vel0->second * dt - Scalar(0.5) * g_G * dt * dt);
 
       ///////////// residual //////////////
       Eigen::Matrix<Scalar, 9, 1> res;
@@ -2672,13 +2704,15 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
           (Sophus::SO3<Scalar>::exp(bg_diff.template segment<3>(3)) * imu_m.getDeltaState().T_w_i.so3() *
            it_pose1->second.getPose().so3().inverse() * it_pose0->second.getPose().so3())
               .log();
-      Vec3 tmp2 = R0_inv * (it_vel1->second - it_vel0->second - g * dt);
+      Vec3 tmp2 = R0_inv * (it_vel1->second - it_vel0->second - g_G * dt);
       ///dv
       res.template segment<3>(6) =
           tmp2 - (imu_m.getDeltaState().vel_w_i + bg_diff.template segment<3>(6) +
                   ba_diff.template segment<3>(6));
 
-      r.template segment<9>(k * 9) = imu_m.get_sqrt_cov_inv() * res;
+      r1 = imu_m.get_sqrt_cov_inv() * res;
+
+      std::cout << "dt: " << dt << " res- " << k << ": " << std::endl << res << std::endl;
 
       //////////// Jacobian ///////////
       Eigen::Matrix<Scalar, 9, 14> Jaco;
@@ -2686,81 +2720,111 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
 
       Eigen::Matrix<Scalar, 3, 2> d_Rwg_a12;
       d_Rwg_a12 << Scalar(1), Scalar(0),
-          Scalar(0), Scalar(1),
-          Scalar(0), Scalar(0);
-      /// Jacobians of dp
-      Jaco.template block<3, 2>(0, 0) = -0.5 * R0_inv * dt * dt * (-Sophus::SO3<Scalar>::hat(Rwg * G_I) * d_Rwg_a12); /// J_dp_Rwg
-      Jaco.template block<3, 3>(0, 2) = -imu_m.get_d_state_d_bg().template block<3, 3>(0, 0); /// J _dp_bg
-      Jaco.template block<3, 3>(0, 5) = -imu_m.get_d_state_d_ba().template block<3, 3>(0, 0); /// J _dp_ba
+                   Scalar(0), Scalar(1),
+                   Scalar(0), Scalar(0);
+      /// Jacobians of dp wrt x (bg, ba, Rwg, v0, v1)
+      Jaco.template block<3, 3>(0, 0) = -imu_m.get_d_state_d_bg().template block<3, 3>(0, 0); /// J _dp_bg
+      Jaco.template block<3, 3>(0, 3) = -imu_m.get_d_state_d_ba().template block<3, 3>(0, 0); /// J _dp_ba
+      Jaco.template block<3, 2>(0, 6) = -0.5 * R0_inv * dt * dt * (-Sophus::SO3<Scalar>::hat(Rwg * G_I) * d_Rwg_a12); /// J_dp_Rwg
       Jaco.template block<3, 3>(0, 8) = -R0_inv * dt; /// J _dp_v0
       Jaco.template block<3, 3>(0, 11) = Eigen::Matrix<Scalar, 3, 3>::Zero(); /// J _dp_v1
 
-      /// Jacobians of dr
-      Jaco.template block<3, 2>(3, 0) = Eigen::Matrix<Scalar, 3, 2>::Zero(); /// J_dr_Rwg
+      /// Jacobians of dr wrt x (bg, ba, Rwg, v0, v1)
       Eigen::Matrix<Scalar, 3, 3> inv_Jl;
       Sophus::leftJacobianInvSO3(res.template segment<3>(3), inv_Jl);
-      Eigen::Matrix<Scalar, 3, 3> Jl;
-      Sophus::leftJacobianSO3(bg_diff.template segment<3>(3), Jl);
-      Jaco.template block<3, 3>(3, 2) = inv_Jl * Jl * imu_m.get_d_state_d_bg().template block<3, 3>(3, 0); /// J _dr_bg
-      Jaco.template block<3, 3>(3, 5) = Eigen::Matrix<Scalar, 3, 3>::Zero(); /// J _dr_ba
+      Jaco.template block<3, 3>(3, 0) = inv_Jl * imu_m.get_d_state_d_bg().template block<3, 3>(3, 0); /// J _dr_bg
+      Jaco.template block<3, 3>(3, 3) = Eigen::Matrix<Scalar, 3, 3>::Zero(); /// J _dr_ba
+      Jaco.template block<3, 2>(3, 6) = Eigen::Matrix<Scalar, 3, 2>::Zero(); /// J_dr_Rwg
       Jaco.template block<3, 3>(3, 8) = Eigen::Matrix<Scalar, 3, 3>::Zero(); /// J _dr_v0
       Jaco.template block<3, 3>(3, 11) = Eigen::Matrix<Scalar, 3, 3>::Zero(); /// J _dr_v1
 
-      /// Jacobians of dv
-      Jaco.template block<3, 2>(6, 0) = -R0_inv * dt * (-Sophus::SO3<Scalar>::hat(Rwg * G_I) * d_Rwg_a12); /// J_dv_Rwg
-      Jaco.template block<3, 3>(6, 2) = -imu_m.get_d_state_d_bg().template block<3, 3>(6, 0); /// J _dv_bg
-      Jaco.template block<3, 3>(6, 5) = -imu_m.get_d_state_d_ba().template block<3, 3>(6, 0); /// J _dv_ba
+      /// Jacobians of dv wrt x (bg, ba, Rwg, v0, v1)
+      Jaco.template block<3, 3>(6, 0) = -imu_m.get_d_state_d_bg().template block<3, 3>(6, 0); /// J _dv_bg
+      Jaco.template block<3, 3>(6, 3) = -imu_m.get_d_state_d_ba().template block<3, 3>(6, 0); /// J _dv_ba
+      Jaco.template block<3, 2>(6, 6) = -R0_inv * dt * (-Sophus::SO3<Scalar>::hat(Rwg * G_I) * d_Rwg_a12); /// J_dv_Rwg
       Jaco.template block<3, 3>(6, 8) = -R0_inv; /// J _dv_v0
       Jaco.template block<3, 3>(6, 11) = R0_inv; /// J _dv_v1
 
-      /// TODO: eval() ?
-      Jaco = (imu_m.get_sqrt_cov_inv() * Jaco).eval();
+//      std::cout << "Jaco: " << std::endl << Jaco << std::endl;
+      Jp1 = imu_m.get_sqrt_cov_inv() * Jaco;
       //////////
+      H1 = Jp1.transpose() * Jp1;
+      b1 = Jp1.transpose() * r1;
 
-      /// Jacobians of dp
-      Jp.template block<3, 2>(0 + 9 * k, 0) += Jaco.template block<3, 2>(0, 0);
-      Jp.template block<3, 3>(0 + 9 * k, 2) += Jaco.template block<3, 3>(0, 2);
-      Jp.template block<3, 3>(0 + 9 * k, 5) += Jaco.template block<3, 3>(0, 5);
-      Jp.template block<3, 3>(0 + 9 * k, 8 + 3 * k) += Jaco.template block<3, 3>(0, 8);
-      Jp.template block<3, 3>(0 + 9 * k, 11 + 3 * k) += Jaco.template block<3, 3>(0, 11);
+      H.template block<8, 8>(0, 0) += H1.template block<8, 8>(0, 0);
+      H.template block<6, 6>(8 + 3 * k, 8 + 3 * k) += H1.template block<6, 6>(8, 8);
+      H.template block<8, 6>(0, 8 + 3 * k) += H1.template block<8, 6>(0, 8);
+      H.template block<6, 8>(8 + 3 * k, 0) += H1.template block<6, 8>(8, 0);
 
-      /// Jacobians of dr
-      Jp.template block<3, 2>(3 + 9 * k, 0) = Jaco.template block<3, 2>(3, 0);
-      Jp.template block<3, 3>(3 + 9 * k, 2) += Jaco.template block<3, 3>(3, 2);
-      Jp.template block<3, 3>(3 + 9 * k, 5) += Jaco.template block<3, 3>(3, 5);
-      Jp.template block<3, 3>(3 + 9 * k, 8 + 3 * k) += Jaco.template block<3, 3>(3, 8);
-      Jp.template block<3, 3>(3 + 9 * k, 11 + 3 * k) += Jaco.template block<3, 3>(3, 11);
+      b.template segment<8>(0) += b1.template segment<8>(0);
+      b.template segment<6>(8 + 3 * k) += b1.template segment<6>(8);
 
-      /// Jacobians of dv
-      Jp.template block<3, 2>(6 + 9 * k, 0) += Jaco.template block<3, 2>(6, 0);
-      Jp.template block<3, 3>(6 + 9 * k, 2) += Jaco.template block<3, 3>(6, 2);
-      Jp.template block<3, 3>(6 + 9 * k, 5) += Jaco.template block<3, 3>(6, 5);
-      Jp.template block<3, 3>(6 + 9 * k, 8 + 3 * k) += Jaco.template block<3, 3>(6, 8);
-      Jp.template block<3, 3>(6 + 9 * k, 11 + 3 * k) += Jaco.template block<3, 3>(6, 11);
+//      std::cout << "H1: " << std::endl << H1 << std::endl;
+//      std::cout << "b1: " << std::endl << b1 << std::endl;
 
       k++;
     }
 
-    Eigen::Vector3<Scalar> res_bg, res_ba;
-    res_bg = bg - Eigen::Vector3<Scalar>::Zero();
-    res_ba = ba - Eigen::Vector3<Scalar>::Zero();
+    ////////////////////////// IMU bg bias prior /////////////////////////////////////
+    {
+      MatX Jp2;
+      VecX r2;
+      Jp2.setZero(3, 3);
+      r2.setZero(3);
 
-    /// d_bg (prior)
-    r.template segment<3>(9 * k) = Scalar(1.0) / sqrt(prior_bg) * res_bg;
-    Jp.template block<3, 3>(9 * k, 2) = Scalar(1.0) / sqrt(prior_bg) * Eigen::Matrix<Scalar, 3, 3>::Identity();  /// wrt bg
+      Eigen::Vector3<Scalar> res_bg;
+      res_bg = bg - Eigen::Vector3<Scalar>::Zero();
+      std::cout << "res_bg_ba: " << res_bg << std::endl;
 
-    /// d_ba (prior)
-    r.template segment<3>(9 * k + 3) = Scalar(1.0) / sqrt(prior_ba) * res_ba;
-    Jp.template block<3, 3>(9 * k + 3, 5) = Scalar(1.0) / sqrt(prior_ba) * Eigen::Matrix<Scalar, 3, 3>::Identity();  /// wrt ba
+      /// d_bg (prior)
+      r2 = Scalar(1.0) / sqrt(prior_bg) * res_bg;
+      Jp2 = Scalar(1.0) / sqrt(prior_bg) * Eigen::Matrix<Scalar, 3, 3>::Identity();  /// wrt bg
 
+      MatX H2;
+      VecX b2;
+      H2.setZero(3, 3);
+      b2.setZero(3);
+
+      H2 = Jp2.transpose() * Jp2;
+      b2 = Jp2.transpose() * r2;
+
+      H.template block<3, 3>(0, 0) += H2;
+      b.template segment<3>(0) += b2;
+
+//      std::cout << "H2: " << std::endl << H2 << std::endl;
+//      std::cout << "b2: " << std::endl << b2 << std::endl;
+    }
+
+    ////////////////////////// IMU ba bias prior /////////////////////////////////////
+    {
+      MatX Jp3;
+      VecX r3;
+      Jp3.setZero(3, 3);
+      r3.setZero(3);
+
+      Eigen::Vector3<Scalar> res_ba;
+      res_ba = ba - Eigen::Vector3<Scalar>::Zero();
+      std::cout << "res_ba: " << res_ba << std::endl;
+
+      /// d_ba (prior)
+      r3 = Scalar(1.0) / sqrt(prior_ba) * res_ba;
+      Jp3 = Scalar(1.0) / sqrt(prior_ba) * Eigen::Matrix<Scalar, 3, 3>::Identity();  /// wrt ba
+
+      MatX H3;
+      VecX b3;
+      H3.setZero(3, 3);
+      b3.setZero(3);
+
+      H3 = Jp3.transpose() * Jp3;
+      b3 = Jp3.transpose() * r3;
+
+      H.template block<3, 3>(3, 3) += H3;
+      b.template segment<3>(3) += b3;
+
+//      std::cout << "H3: " << std::endl << H3 << std::endl;
+//      std::cout << "b3: " << std::endl << b3 << std::endl;
+    }
     ///////////////////////////////////////////
-    MatX H;
-    VecX b;
-    H.setZero(num_para, num_para);
-    b.setZero(num_para);
-
-    H = Jp.transpose() * Jp;
-    b = Jp.transpose() * r;
 
     /// Add small damping for GN
     constexpr Scalar lambda0 = 1e-6;
@@ -2772,19 +2836,25 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
     VecX inc = -H.ldlt().solve(b);
 
     /// apply inc
-    Rwg = (Sophus::SO3<Scalar>::exp(Eigen::Vector3<Scalar>(inc[0], inc[1], 0.0)).matrix() * Rwg).eval();
-    bg = (bg + inc.template segment<3>(2)).eval();
-    ba = (ba + inc.template segment<3>(5)).eval();
+    bg += inc.template segment<3>(0);
+    ba += inc.template segment<3>(3);
+    Rwg = Sophus::SO3<Scalar>::exp(Eigen::Vector3<Scalar>(inc[6], inc[7], 0.0)).matrix() * Rwg;
 
     int kk = 0;
     for (auto it = vel.begin(); it != vel.end(); ++it) {
-      it->second = (it->second + inc.template segment<3>(8 + kk)).eval();
+      it->second += inc.template segment<3>(8 + 3 * kk);
       kk++;
     }
 
-//    std::cout << "inc: " << inc << std::endl;
+    std::cout << inc.rows() << " inc: " << inc << std::endl;
+    std::cout << "----------- iter: " << iter << " -----------" << std::endl;
   }
+
   std::cout << "Rwg: " << Rwg << std::endl;
+  std::cout << "T_w_y_init.so3().matrix().inverse(): " << T_w_y_init.so3().matrix().inverse() << std::endl;
+  std::cout << "bg: " << std::endl << bg << " ba: " << std::endl << ba << std::endl;
+//  bg = Vec3::Zero();
+//  ba = Vec3::Zero();
 
   /// apply rotation
   SE3 Tyw(Rwg.transpose(), Vec3::Zero());  /// world(the first camera's) to y (inertial)
@@ -2793,7 +2863,12 @@ void SqrtKeypointVioInitEstimator<Scalar_>::initialize_imu(Eigen::aligned_map<in
   }
   for (auto it = vel.begin(); it != vel.end(); ++it) {
     it->second = Tyw.so3().matrix() * it->second;
+
+    std::cout << "vel: " << it->second << std::endl;
   }
+
+  /// re-intergrate
+  //TODO:
 }
 
 template <class Scalar_>
@@ -2843,11 +2918,11 @@ void SqrtKeypointVioInitEstimator<Scalar_>::optimize_and_marg(
 
       /// set the prior
       {
-//        auto it_end = frame_states.end();
-//        it_end--;
+        auto it_end = frame_states.end();
+        it_end--;
 
-        auto it_end = frame_states.begin();
-        it_end++;
+//        auto it_end = frame_states.begin();
+//        it_end++;
 
         AbsOrderMap aom;
 
@@ -2866,9 +2941,9 @@ void SqrtKeypointVioInitEstimator<Scalar_>::optimize_and_marg(
 
         std::cout << "num_frame: " << num_frame << std::endl;
         const double init_pose_weight = 1.0e8;
-        const double init_vel_weight = 1.0e8;
-        const double init_ba_weight = 1.0e1;
-        const double init_bg_weight = 1.0e2;
+        const double init_vel_weight = 1.0e2;
+        const double init_ba_weight = 1.0e8;
+        const double init_bg_weight = 1.0e8;
 
         marg_data.order = aom;
         marg_data.is_sqrt = config.vio_sqrt_marg;
@@ -2903,8 +2978,35 @@ void SqrtKeypointVioInitEstimator<Scalar_>::optimize_and_marg(
 //        std::cout << "marg_vo_H: " << marg_vo_data.H << std::endl;
       }
       /// Visual-Inertial Optimization
+      std::cout << "before optimize" << std::endl;
+      for (auto it = frame_states.begin(); it != frame_states.end(); ++it) {
+        auto sr = it->second.getState().T_w_i.so3().matrix();
+        auto sp = it->second.getState().T_w_i.translation();
+        auto svel = it->second.getState().vel_w_i;
+        auto sbg = it->second.getState().bias_gyro;
+        auto sba = it->second.getState().bias_accel;
+        std::cout << "t: " << it->first << std::endl;
+        std::cout << sr << std::endl;
+        std::cout << sp.x() << "," << sp.y() << "," << sp.z() <<
+            "|" << svel.x() << "," << svel.y() << "," << svel.z() <<
+            "|" << sbg.x() << "," << sbg.y() << "," << sbg.z() <<
+            "|" << sba.x() << "," << sba.y() << "," << sba.z() << std::endl;
+      }
       optimize();
-
+      std::cout << "--------after optimize--------" << std::endl;
+      for (auto it = frame_states.begin(); it != frame_states.end(); ++it) {
+        auto sr = it->second.getState().T_w_i.so3().matrix();
+        auto sp = it->second.getState().T_w_i.translation();
+        auto svel = it->second.getState().vel_w_i;
+        auto sbg = it->second.getState().bias_gyro;
+        auto sba = it->second.getState().bias_accel;
+        std::cout << "t: " << it->first << std::endl;
+        std::cout << sr << std::endl;
+        std::cout << sp.x() << "," << sp.y() << "," << sp.z() <<
+                  "|" << svel.x() << "," << svel.y() << "," << svel.z() <<
+                  "|" << sbg.x() << "," << sbg.y() << "," << sbg.z() <<
+                  "|" << sba.x() << "," << sba.y() << "," << sba.z() << std::endl;
+      }
       std::cout << "frame_poses size: " << frame_poses.size() << std::endl;
       std::cout << "frame_states size: " << frame_states.size() << std::endl;
       std::cout << "marginalize_imu" << std::endl;

@@ -254,6 +254,7 @@ class SqrtKeypointVioInitEstimator : public VioEstimatorBase,
   size_t max_kfs;
 
   SE3 T_w_i_init;
+  SE3 T_w_y_init;
 
   bool initialized;
   bool opt_started;

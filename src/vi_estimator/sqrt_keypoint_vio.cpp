@@ -197,6 +197,8 @@ void SqrtKeypointVioEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_,
         T_w_i_init.setQuaternion(Eigen::Quaternion<Scalar>::FromTwoVectors(
             data->accel, Vec3::UnitZ()));
 
+        std::cout << "T_w_i_init: " << T_w_i_init.so3().matrix() << std::endl;
+
         last_state_t_ns = curr_frame->t_ns;
         imu_meas[last_state_t_ns] =
             IntegratedImuMeasurement<Scalar>(last_state_t_ns, bg, ba);
@@ -1432,6 +1434,37 @@ void SqrtKeypointVioEstimator<Scalar_>::optimize_and_marg(
     const std::unordered_set<KeypointId>& lost_landmaks) {
   optimize();
   marginalize(num_points_connected, lost_landmaks);
+
+  for (auto it = frame_poses.begin(); it != frame_poses.end(); ++it) {
+    auto sr = it->second.getPose().so3().matrix();
+    auto sp = it->second.getPose().translation();
+    std::cout << "t: " << it->first << std::endl;
+    std::cout << sr << std::endl;
+    std::cout << sp.x() << "," << sp.y() << "," << sp.z() << std::endl;
+  }
+  std::cout << "------------" << std::endl;
+  for (auto it = frame_states.begin(); it != frame_states.end(); ++it) {
+    auto sr = it->second.getState().T_w_i.so3().matrix();
+    auto sp = it->second.getState().T_w_i.translation();
+    auto svel = it->second.getState().vel_w_i;
+    auto sbg = it->second.getState().bias_gyro;
+    auto sba = it->second.getState().bias_accel;
+    std::cout << "t: " << it->first << std::endl;
+    std::cout << sr << std::endl;
+    std::cout << sp.x() << "," << sp.y() << "," << sp.z() <<
+              "|" << svel.x() << "," << svel.y() << "," << svel.z() <<
+              "|" << sbg.x() << "," << sbg.y() << "," << sbg.z() <<
+              "|" << sba.x() << "," << sba.y() << "," << sba.z() << std::endl;
+  }
+
+  std::cout << "last_t: " << last_state_t_ns << std::endl;
+  std::cout << "frame_poses size: " << frame_poses.size() << std::endl;
+  std::cout << "frame_states size: " << frame_states.size() << std::endl;
+  std::cout << "kf size: " << kf_ids.size() << std::endl;
+  std::cout << "imu_meas size: " << imu_meas.size() << std::endl;
+  std::cout << "prev_opt_flow_res size: " << prev_opt_flow_res.size() << std::endl;
+
+  std::cout << "================================" << std::endl;
 }
 
 template <class Scalar_>
