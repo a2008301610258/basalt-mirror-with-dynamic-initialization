@@ -485,7 +485,7 @@ int main(int argc, char** argv) {
           } else if (!it->second->frames.empty()) {
             T_w_i = it->second->frames.back();
           }
-          T_w_i.so3() = Sophus::SO3d();
+//          T_w_i.so3() = Sophus::SO3d();
 
           camera.Follow(T_w_i.matrix());
         }
@@ -582,10 +582,11 @@ int main(int argc, char** argv) {
 
   // wait first for vio to complete processing
   vio->maybe_join();
-
+  std::cout << "maybe_join" << std::endl;
   // input threads will abort when vio is finished, but might be stuck in full
   // push to full queue, so drain queue now
   vio->drain_input_queues();
+  std::cout << "drain_input_queues" << std::endl;
 
   // join input threads
   t1.join();

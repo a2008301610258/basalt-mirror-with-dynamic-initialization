@@ -91,7 +91,7 @@ class FrameToFrameOpticalFlow : public OpticalFlowBase {
         new std::thread(&FrameToFrameOpticalFlow::processingLoop, this));
   }
 
-  ~FrameToFrameOpticalFlow() { processing_thread->join(); }
+  ~FrameToFrameOpticalFlow() { processing_thread->join(); std::cout << "~FrameToFrameOpticalFlow" << std::endl;}
 
   void processingLoop() {
     OpticalFlowInput::Ptr input_ptr;

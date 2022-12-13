@@ -101,7 +101,8 @@ set(CMAKE_CXX_FLAGS_CIDEBUG  "-O0 -DEIGEN_INITIALIZE_MATRICES_BY_NAN")          
 set(CMAKE_CXX_FLAGS_CIRELWITHDEBINFO "-O3 -DEIGEN_INITIALIZE_MATRICES_BY_NAN")  # CI version with no debug symbols
 
 # base set of compile flags
-set(BASALT_CXX_FLAGS "-Wall -Wextra -Werror -Wno-error=unused-parameter -ftemplate-backtrace-limit=0")
+#set(BASALT_CXX_FLAGS "-Wall -Wextra -Werror -Wno-error=unused-parameter -ftemplate-backtrace-limit=0")
+set(BASALT_CXX_FLAGS "-Wall -Wextra -Wno-error=unused-parameter -ftemplate-backtrace-limit=0")
 
 # clang-specific compile flags
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
@@ -279,6 +280,8 @@ set_property(TARGET basalt::opencv PROPERTY INTERFACE_LINK_LIBRARIES ${OpenCV_LI
 find_package(fmt REQUIRED)
 message(STATUS "Found {fmt} ${fmt_VERSION} in: ${fmt_DIR}")
 
+find_package(PCL REQUIRED)
+
 add_subdirectory(thirdparty)
 
 # custom scoped cli11 target
@@ -355,6 +358,7 @@ target_sources(basalt
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/sqrt_keypoint_vio.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/sqrt_keypoint_vo.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/sqrt_keypoint_vio_init.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/sqrt_keypoint_fusion.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/vi_estimator/vio_estimator.h
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/calibration/aprilgrid.cpp
@@ -381,6 +385,7 @@ target_sources(basalt
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vi_estimator/sqrt_keypoint_vio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vi_estimator/sqrt_keypoint_vo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vi_estimator/sqrt_keypoint_vio_init.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/vi_estimator/sqrt_keypoint_fusion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vi_estimator/vio_estimator.cpp
 )
 
@@ -436,7 +441,41 @@ if(realsense2_FOUND)
   target_link_libraries(basalt_rs_t265_vio basalt realsense2::realsense2 pangolin basalt::cli11)
 endif()
 
+############################ ROS ######################
+find_package(catkin REQUIRED COMPONENTS roscpp tf std_msgs geometry_msgs sensor_msgs nav_msgs visualization_msgs image_transport cv_bridge)
+if(catkin_FOUND)
+  include_directories(${catkin_INCLUDE_DIRS})
+  add_executable(basalt_vio_ros src/vio_ros.cpp)
+  target_link_libraries(basalt_vio_ros basalt basalt::cli11 ${catkin_LIBRARIES})
 
+  include_directories(
+          ${catkin_INCLUDE_DIRS}
+          ${PCL_INCLUDE_DIRS})
+  add_executable(basalt_fusion_ros
+          src/li_estimator/imu_processing.cpp
+          src/li_estimator/ikd_tree.cpp
+#          src/li_estimator/r3live_lio.cpp
+          src/li_estimator/eskf_lio.cpp
+          src/fusion_ros.cpp)
+  target_link_libraries(basalt_fusion_ros basalt basalt::cli11 ${PCL_LIBRARIES} ${catkin_LIBRARIES})
+
+#  include_directories(
+#          include
+#          ${EIGEN3_INCLUDE_DIR}
+#          ${PCL_INCLUDE_DIRS}
+#          ${catkin_INCLUDE_DIRS})
+#  add_executable(r3live_mapping
+#          src/li_estimator/imu_processing.cpp
+#          src/li_estimator/r3live_lio.cpp
+#          src/li_estimator/ikd_tree.cpp
+#          src/li_estimator/r3live.cpp)
+#
+#  target_link_libraries(r3live_mapping
+#          ${PCL_LIBRARIES}
+#          ${catkin_LIBRARIES}
+#          )
+endif(catkin_FOUND)
+#######################################################
 
 install(TARGETS basalt_calibrate basalt_calibrate_imu basalt_vio_sim basalt_mapper_sim basalt_mapper basalt_opt_flow basalt_vio basalt_kitti_eval basalt_time_alignment basalt
   EXPORT BasaltTargets
