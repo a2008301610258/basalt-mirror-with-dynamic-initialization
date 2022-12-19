@@ -38,6 +38,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <basalt/optical_flow/optical_flow.h>
 #include <basalt/utils/imu_types.h>
+#include <basalt/li_estimator/states_group.h>
 
 namespace basalt {
 
@@ -78,6 +79,9 @@ class VioEstimatorBase {
 
   tbb::concurrent_bounded_queue<OpticalFlowResult::Ptr> vision_data_queue;
   tbb::concurrent_bounded_queue<ImuData<double>::Ptr> imu_data_queue;
+
+  tbb::concurrent_bounded_queue<StatesGroup::Ptr> eskf_vio_queue;
+  tbb::concurrent_bounded_queue<StatesGroup::Ptr>* eskf_lio_queue = nullptr;
 
   tbb::concurrent_bounded_queue<PoseVelBiasState<double>::Ptr>*
       out_state_queue = nullptr;

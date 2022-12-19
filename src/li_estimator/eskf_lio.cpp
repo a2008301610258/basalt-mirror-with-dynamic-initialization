@@ -64,12 +64,9 @@ void EskfLioEstimator::set_initial_state_cov(StatesGroup &state) {
 }
 
 // project lidar frame to world
-void EskfLioEstimator::pointBodyToWorld(PointType const *const pi,
-                                        PointType *const po) {
+void EskfLioEstimator::pointBodyToWorld(PointType const *const pi, PointType *const po, const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos) {
   Eigen::Vector3d p_body(pi->x, pi->y, pi->z);
-  Eigen::Vector3d p_global(g_lio_state.rot_end *
-                               (Lidar_R_to_IMU * p_body + Lidar_offset_to_IMU) +
-                           g_lio_state.pos_end);
+  Eigen::Vector3d p_global(rot * (Lidar_R_to_IMU * p_body + Lidar_offset_to_IMU) + pos);
 
   po->x = p_global(0);
   po->y = p_global(1);
@@ -77,12 +74,9 @@ void EskfLioEstimator::pointBodyToWorld(PointType const *const pi,
   po->intensity = pi->intensity;
 }
 
-void EskfLioEstimator::RGBpointBodyToWorld(PointType const *const pi,
-                                           pcl::PointXYZI *const po) {
+void EskfLioEstimator::RGBpointBodyToWorld(PointType const *const pi, pcl::PointXYZI *const po, const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos) {
   Eigen::Vector3d p_body(pi->x, pi->y, pi->z);
-  Eigen::Vector3d p_global(g_lio_state.rot_end *
-                               (Lidar_R_to_IMU * p_body + Lidar_offset_to_IMU) +
-                           g_lio_state.pos_end);
+  Eigen::Vector3d p_global(rot * (Lidar_R_to_IMU * p_body + Lidar_offset_to_IMU) + pos);
 
   po->x = p_global(0);
   po->y = p_global(1);
@@ -99,17 +93,17 @@ int EskfLioEstimator::get_cube_index(const int &i, const int &j, const int &k) {
   return (i + laserCloudWidth * j + laserCloudWidth * laserCloudHeight * k);
 }
 
-void EskfLioEstimator::lasermap_fov_segment() {
-  pointBodyToWorld(XAxisPoint_body, XAxisPoint_world);
-  int centerCubeI = int((g_lio_state.pos_end(0) + 0.5 * cube_len) / cube_len) +
+void EskfLioEstimator::lasermap_fov_segment(const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos) {
+  pointBodyToWorld(XAxisPoint_body, XAxisPoint_world, rot, pos);
+  int centerCubeI = int((pos(0) + 0.5 * cube_len) / cube_len) +
                     laserCloudCenWidth;
-  int centerCubeJ = int((g_lio_state.pos_end(1) + 0.5 * cube_len) / cube_len) +
+  int centerCubeJ = int((pos(1) + 0.5 * cube_len) / cube_len) +
                     laserCloudCenHeight;
-  int centerCubeK = int((g_lio_state.pos_end(2) + 0.5 * cube_len) / cube_len) +
+  int centerCubeK = int((pos(2) + 0.5 * cube_len) / cube_len) +
                     laserCloudCenDepth;
-  if (g_lio_state.pos_end(0) + 0.5 * cube_len < 0) centerCubeI--;
-  if (g_lio_state.pos_end(1) + 0.5 * cube_len < 0) centerCubeJ--;
-  if (g_lio_state.pos_end(2) + 0.5 * cube_len < 0) centerCubeK--;
+  if (pos(0) + 0.5 * cube_len < 0) centerCubeI--;
+  if (pos(1) + 0.5 * cube_len < 0) centerCubeJ--;
+  if (pos(2) + 0.5 * cube_len < 0) centerCubeK--;
   bool last_inFOV_flag = 0;
   int cube_index = 0;
   cub_needrm.clear();
@@ -307,21 +301,28 @@ int EskfLioEstimator::proc_func() {
     featsArray[i].reset(new PointCloudXYZINormal());
   }
 
-  std::shared_ptr<ImuProcess> p_imu(new ImuProcess());
-  m_imu_process = p_imu;
+//  std::shared_ptr<ImuProcess> p_imu(new ImuProcess());
+//  m_imu_process = p_imu;
   //------------------------------------------------------------------------------------------------------
   LidarData::Ptr curr_frame = nullptr;
   ImuData<double>::Ptr data = nullptr; // = popFromImuDataQueue();
 //  BASALT_ASSERT_MSG(data, "first IMU measurment is nullptr");
+  imu_data_queue.pop(data);
+  data->accel = calib.calib_accel_bias.getCalibrated(data->accel);
+  data->gyro = calib.calib_gyro_bias.getCalibrated(data->gyro);
 
-  set_initial_state_cov(g_lio_state);
+//  set_initial_state_cov(g_lio_state);
+
+  StatesGroup::Ptr eskf_state;
 
   while (true) {
     if (flg_exit) break;
 
-    std::cout << "========================================" << std::endl;
+    std::cout << "================== lio start ===================" << std::endl;
 
-    basalt::MeasureGroup measures;
+    std::cout << "eskf_vio_queue size: " << eskf_vio_queue->size() << std::endl;
+    eskf_vio_queue->pop(eskf_state);
+    std::cout << std::setprecision(19) << "vio eskf state: " << eskf_state->last_update_time_ns << std::endl;
 
     lidar_data_queue.pop(curr_frame);
 
@@ -329,68 +330,101 @@ int EskfLioEstimator::proc_func() {
       std::cout << "curr_frame is null" << std::endl;
       break;
     }
-    imu_data_queue.pop(data);
-    if (!data) {
-      std::cout << "first IMU is nullptr" << std::endl;
-      break;
+//    std::cout << std::setprecision(19) << "lidar time: " << curr_frame->t_ns << std::endl;
+    int i = 0;
+    while (curr_frame->t_ns_end < eskf_state->last_update_time_ns) {
+//      std::cout << std::setprecision(19) << i << "-lidar-cam dt time: " << (curr_frame->t_ns_end - eskf_state->last_update_time_ns) * 1.0e-9 << std::endl;
+//      std::cout << "lidar pop : " << lidar_data_queue.size() << std::endl;
+      lidar_data_queue.pop(curr_frame);
+      i++;
     }
 
-    while (data->t_ns <= curr_frame->t_ns_end) {
-      double tm = data->t_ns * 1.0e-9;
-      measures.imu.push_back(ImuTypeData(tm, data->accel, data->gyro));
+    std::cout << std::setprecision(19) << "lidar time: " << curr_frame->t_ns_end << std::endl;
+    std::cout << std::setprecision(19) << i << "-lidar-cam dt time: " << (curr_frame->t_ns_end - eskf_state->last_update_time_ns) * double(1.0e-9) << std::endl;
 
+    double lidar_cam_dt = (curr_frame->t_ns_end - eskf_state->last_update_time_ns) * double(1.0e-9);
+    BASALT_ASSERT(curr_frame->t_ns_end >= eskf_state->last_update_time_ns);
+    BASALT_ASSERT(lidar_cam_dt <= 0.1);
+    if (i != 0) {
+      std::cout << "i is not 0 " << std::endl;
+    }
+
+//    if (!data) {
+//      std::cout << "first IMU is nullptr" << std::endl;
+//      break;
+//    }
+
+    basalt::MeasureGroup measures;
+
+    while (data->t_ns <= curr_frame->t_ns_end) {
+      measures.imu.push_back(ImuTypeData(data->t_ns, data->accel, data->gyro));
       imu_data_queue.pop(data);
       if (!data) break;
-
-//          data->accel = calib.calib_accel_bias.getCalibrated(data->accel);
-//          data->gyro = calib.calib_gyro_bias.getCalibrated(data->gyro);
-      // std::cout << "Skipping IMU data.." << std::endl;
+      data->accel = calib.calib_accel_bias.getCalibrated(data->accel);
+      data->gyro = calib.calib_gyro_bias.getCalibrated(data->gyro);
     }
     std::cout << "imu size: " << measures.imu.size() << std::endl;
     Timer t_total;
     measures.lidar = curr_frame->lidar;
-    measures.lidar_beg_time = curr_frame->t_ns * 1.0e-9;
-    measures.lidar_end_time = curr_frame->t_ns_end * 1.0e-9;
+    measures.lidar_beg_time_ns = curr_frame->t_ns_beg;
+    measures.lidar_end_time_ns = curr_frame->t_ns_end;
 
-    if (1) {
-
+    StatesGroup g_lio_state = *eskf_state;
+    {
       if (flg_reset) {
         ROS_WARN("reset when rosbag play back");
-        p_imu->Reset();
+//        p_imu->Reset();
         flg_reset = false;
         continue;
       }
       g_LiDAR_frame_index++;
 
-      Timer t_propagator;
-      initialized = p_imu->Process(measures, g_lio_state, feats_undistort);
-      std::cout << "propagator time: " << t_propagator.elapsed() * 1000.0 << " ms" << std::endl;
+      if (flg_first) {
+        flg_EKF_inited = true;
+        /// the first need not to undistort
+        *feats_undistort = measures.lidar;
+
+        flg_first = false;
+      } else {
+//        BASALT_ASSERT(i <= 1);
+//        Timer t_propagator;
+        undistort_point_cloud(measures, g_lio_state, *feats_undistort);
+
+        auto v_imu = measures.imu;
+
+        double start_dt = (v_imu.front().tm_ns - g_lio_state.last_update_time_ns) * double(1e-9);
+        double end_dt = (measures.lidar_end_time_ns - v_imu.back().tm_ns) * double(1e-9);
+        std::cout << "start_dt: " << start_dt << " end_dt: " << end_dt << std::endl;
+
+        if (start_dt > 0.0) {
+          ImuTypeData imu_data = v_imu.front();
+          imu_data.tm_ns = g_lio_state.last_update_time_ns;
+          v_imu.push_front(imu_data);
+        }
+        if (end_dt > 0.0) {
+          ImuTypeData imu_data = v_imu.back();
+          imu_data.tm_ns = measures.lidar_end_time_ns;
+          v_imu.push_back(imu_data);
+        }
+
+        g_lio_state = StateHelper::eskf_state_propagate(g_lio_state, v_imu, 0);
+        std::cout << std::setprecision(19) << "g_lio_state(time_ns): " << g_lio_state.last_update_time_ns << std::endl;
+//        std::cout << "propagator time: " << t_propagator.elapsed() * 1000.0 << " ms" << std::endl;
+      }
 
       StatesGroup state_propagate(g_lio_state);
 
-      if (feats_undistort->empty() || (feats_undistort == NULL)) {
-        frame_first_pt_time = measures.lidar_beg_time;
-        std::cout << "not ready for odometry" << std::endl;
-        continue;
-      }
-
-      if ((measures.lidar_beg_time - frame_first_pt_time) < INIT_TIME) {
-        flg_EKF_inited = false;
-        std::cout << "||||||||||Initiallizing LiDAR||||||||||" << std::endl;
-      } else {
-        flg_EKF_inited = true;
-      }
       /*** Compute the euler angle ***/
       Eigen::Vector3d euler_cur = RotMtoEuler(g_lio_state.rot_end);
-      lasermap_fov_segment();
+      lasermap_fov_segment(g_lio_state.rot_end, g_lio_state.pos_end);
 
-      Timer t_filter;
+//      Timer t_filter;
       downSizeFilterSurf.setInputCloud(feats_undistort);
       downSizeFilterSurf.filter(*feats_down);
       /// use approximate voxel grid filter
 //      downSizeAprxFilterSurf.setInputCloud(feats_undistort);
 //      downSizeAprxFilterSurf.filter(*feats_down);
-      std::cout << "filter time: " << t_filter.elapsed() * 1000.0 << " ms" << std::endl;
+//      std::cout << "filter time: " << t_filter.elapsed() * 1000.0 << " ms" << std::endl;
 
       /*** initialize the map kdtree ***/
       if ((feats_down->points.size() > 1) && (ikdtree.Root_Node == nullptr)) {
@@ -400,11 +434,17 @@ int EskfLioEstimator::proc_func() {
         for (int i = 0; i < feats_down->points.size(); i++) {
           /* transform to world frame */
           pointBodyToWorld(&(feats_down->points[i]),
-                           &(feats_down_updated->points[i]));
+                           &(feats_down_updated->points[i]), g_lio_state.rot_end, g_lio_state.pos_end);
         }
 
         ikdtree.set_downsample_param(filter_size_map_min);
         ikdtree.Build(feats_down_updated->points);
+
+        std::cout << "init kdtree" << std::endl;
+        /// first must be static
+        StatesGroup state_aft_integration = g_lio_state;
+        state_aft_integration.last_update_time_ns = curr_frame->t_ns_end;
+        eskf_lio_queue.push(std::make_shared<StatesGroup>(state_aft_integration));
         continue;
       }
       std::cout << "ikdtree size: " << ikdtree.size() << std::endl;
@@ -413,6 +453,7 @@ int EskfLioEstimator::proc_func() {
                   << std::endl;
         continue;
       }
+      BASALT_ASSERT(ikdtree.Root_Node != nullptr);
       int featsFromMapNum = ikdtree.size();
       int feats_down_size = feats_down->points.size();
 
@@ -452,7 +493,7 @@ int EskfLioEstimator::proc_func() {
           coeffSel->clear();
 
           /** closest surface search and residual computation **/
-          Timer t_kdtree;
+//          Timer t_kdtree;
           for (int i = 0; i < feats_down_size; i += m_lio_update_point_step) {
             //                        double     search_start = omp_get_wtime();
             PointType &pointOri_tmpt = feats_down->points[i];
@@ -463,7 +504,7 @@ int EskfLioEstimator::proc_func() {
             PointType &pointSel_tmpt = feats_down_updated->points[i];
 
             /* transform to world frame */
-            pointBodyToWorld(&pointOri_tmpt, &pointSel_tmpt);
+            pointBodyToWorld(&pointOri_tmpt, &pointSel_tmpt, g_lio_state.rot_end, g_lio_state.pos_end);
             std::vector<float> pointSearchSqDis_surf;
 
             auto &points_near = Nearest_Points[i];
@@ -551,7 +592,7 @@ int EskfLioEstimator::proc_func() {
               }
             }
           }
-          std::cout << "kdtree time: " << t_kdtree.elapsed() * 1000.0 << " ms" << std::endl;
+//          std::cout << "kdtree time: " << t_kdtree.elapsed() * 1000.0 << " ms" << std::endl;
 
           double total_residual = 0.0;
           laserCloudSelNum = 0;
@@ -566,15 +607,15 @@ int EskfLioEstimator::proc_func() {
           }
           res_mean_last = total_residual / laserCloudSelNum;
 
-          std::cout << "iteCount=" << iterCount
-                    << " laserCloudSelNum=" << laserCloudSelNum << std::endl;
+//          std::cout << "iteCount=" << iterCount
+//                    << " laserCloudSelNum=" << laserCloudSelNum << std::endl;
 
           /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
           Eigen::MatrixXd Hsub(laserCloudSelNum, 6);
           Eigen::VectorXd meas_vec(laserCloudSelNum);
           Hsub.setZero();
 
-          Timer t_matrix;
+//          Timer t_matrix;
           for (int i = 0; i < laserCloudSelNum; i++) {
             const PointType &laser_p = laserCloudOri->points[i];
             Eigen::Vector3d point_this(laser_p.x, laser_p.y, laser_p.z);
@@ -599,7 +640,7 @@ int EskfLioEstimator::proc_func() {
             meas_vec(i) = -norm_p.intensity;
           }
 
-          std::cout << "matrix time: " << t_matrix.elapsed() * 1000.0 << " ms" << std::endl;
+//          std::cout << "matrix time: " << t_matrix.elapsed() * 1000.0 << " ms" << std::endl;
 
           Eigen::Vector3d rot_add, t_add, v_add, bg_add, ba_add, g_add;
           Eigen::Matrix<double, DIM_OF_STATES, 1> solution;
@@ -666,7 +707,7 @@ int EskfLioEstimator::proc_func() {
           }
 
           // printf_line;
-          g_lio_state.last_update_time = measures.lidar_end_time;
+          g_lio_state.last_update_time_ns = g_lio_state.last_update_time_ns;
           euler_cur = RotMtoEuler(g_lio_state.rot_end);
 
           /*** Rematch Judgement ***/
@@ -683,13 +724,13 @@ int EskfLioEstimator::proc_func() {
               (iterCount == NUM_MAX_ITERATIONS - 1))  // Fast lio ori version.
           {
             if (flg_EKF_inited) {
-              std::cout << "update cov" << std::endl;
+//              std::cout << "update cov" << std::endl;
               /*** Covariance Update ***/
               G.block<DIM_OF_STATES, 6>(0, 0) = K * Hsub;
               g_lio_state.cov = (I_STATE - G) * g_lio_state.cov;
               total_distance += (g_lio_state.pos_end - position_last).norm();
               position_last = g_lio_state.pos_end;
-              std::cout << "update cov done" << std::endl;
+//              std::cout << "update cov done" << std::endl;
 
               // std::cout << "position: " << g_lio_state.pos_end.transpose() << " total distance: " << total_distance << std::endl;
             }
@@ -729,20 +770,25 @@ int EskfLioEstimator::proc_func() {
         for (int i = 0; i < feats_down_size; i++) {
           /* transform to world frame */
           pointBodyToWorld(&(feats_down->points[i]),
-                           &(feats_down_updated->points[i]));
+                           &(feats_down_updated->points[i]), g_lio_state.rot_end, g_lio_state.pos_end);
         }
 
-        Timer t_kdtree_add;
+//        Timer t_kdtree_add;
         ikdtree.Add_Points(feats_down_updated->points, true);
-        std::cout << "kdtree_add: " << t_kdtree_add.elapsed() * 1000.0 << " ms" << std::endl;
+//        std::cout << "kdtree_add: " << t_kdtree_add.elapsed() * 1000.0 << " ms" << std::endl;
       }
       //            std::cout <<"lio cost time: " << tim.toc()<< endl;
+
+      //TODO:
+      std::cout << std::setprecision(19) << "lidar->state: " << g_lio_state.last_update_time_ns << std::endl;
+      eskf_lio_queue.push(std::make_shared<StatesGroup>(g_lio_state));
+
       /******* Publish current frame points in world coordinates:  *******/
 
       if (out_vis_queue) {
         LioVisualizationData::Ptr data(new LioVisualizationData);
         data->is_kf = false;
-        data->t_ns = measures.lidar_end_time * 1.0e9;
+        data->t_ns = measures.lidar_end_time_ns;
         data->state = Sophus::SE3d(g_lio_state.rot_end, g_lio_state.pos_end);
 
         laserCloudFullRes2->clear();
@@ -751,7 +797,7 @@ int EskfLioEstimator::proc_func() {
         pcl::PointXYZI temp_point;
 //        laserCloudFullResColor->clear();
         for (int i = 0; i < laserCloudFullResNum; i++) {
-          RGBpointBodyToWorld(&laserCloudFullRes2->points[i], &temp_point);
+          RGBpointBodyToWorld(&laserCloudFullRes2->points[i], &temp_point, g_lio_state.rot_end, g_lio_state.pos_end);
 //          laserCloudFullResColor->push_back(temp_point);
           data->curr_cloud.push_back(temp_point);
         }

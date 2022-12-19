@@ -5,6 +5,7 @@
 #include <basalt/optimization/accumulator.h>
 #include <basalt/vi_estimator/landmark_database.h>
 #include <basalt/linearization/landmark_block.hpp>
+#include <basalt/linearization/lio_prior_block.hpp>
 #include <basalt/utils/cast_utils.hpp>
 #include <basalt/utils/time_utils.hpp>
 
@@ -35,6 +36,7 @@ class LinearizationAbsQR : public LinearizationBase<Scalar_, POSE_SIZE_> {
 
   using LandmarkBlockPtr = std::unique_ptr<LandmarkBlock<Scalar>>;
   using ImuBlockPtr = std::unique_ptr<ImuBlock<Scalar>>;
+  using LioPriorBlockPtr = std::unique_ptr<LioPriorBlock<Scalar>>;
 
   using typename Base::Options;
 
@@ -102,12 +104,17 @@ class LinearizationAbsQR : public LinearizationBase<Scalar_, POSE_SIZE_> {
 
   void add_dense_H_b_imu(MatX& H, VecX& b) const;
 
+  void add_dense_H_b_lio_prior(DenseAccumulator<Scalar>& accum) const;
+
+  void add_dense_H_b_lio_prior(MatX& H, VecX& b) const;
+
  protected:
   Options options_;
 
   std::vector<KeypointId> landmark_ids;
   std::vector<LandmarkBlockPtr> landmark_blocks;
   std::vector<ImuBlockPtr> imu_blocks;
+  std::vector<LioPriorBlockPtr> lio_prior_blocks;
 
   std::unordered_map<TimeCamId, size_t> host_to_idx_;
   HostLandmarkMapType host_to_landmark_block;

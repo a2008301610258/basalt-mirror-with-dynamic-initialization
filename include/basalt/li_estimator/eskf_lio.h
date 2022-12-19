@@ -54,27 +54,17 @@ Dr. Fu Zhang < fuzhang@hku.hk >.
 #include <csignal>
 #include <unistd.h>
 #include <future>
-#include "basalt/li_estimator/so3_math.h"
-#include <ros/ros.h>
 #include <Eigen/Core>
-#include "basalt/li_estimator/common_lib.h"
-#include "basalt/li_estimator/ikd_tree.h"
-#include <nav_msgs/Odometry.h>
-#include <nav_msgs/Path.h>
-#include <opencv2/core/eigen.hpp>
-#include <visualization_msgs/Marker.h>
-#include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/io/pcd_io.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <tf/transform_datatypes.h>
-#include <tf/transform_broadcaster.h>
-#include <visualization_msgs/Marker.h>
-#include <geometry_msgs/Vector3.h>
+
+#include <basalt/li_estimator/so3_math.h>
+#include <basalt/li_estimator/common_lib.h>
+#include <basalt/li_estimator/ikd_tree.h>
+#include <basalt/calibration/calibration.hpp>
 
 //#include <opencv2/highgui/highgui.hpp>
 //#include <cv_bridge/cv_bridge.h>
@@ -107,7 +97,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(velodyne_ros::Point,
 )
 
 // estimator inputs and output;
-extern basalt::StatesGroup g_lio_state;
+//extern basalt::StatesGroup g_lio_state;
 //extern std::shared_ptr<basalt::ImuProcess> g_imu_process;
 
 namespace basalt {
@@ -140,7 +130,7 @@ public:
 
     using Ptr = std::shared_ptr<EskfLioEstimator>;
 //    std::mutex  m_mutex_lio_process;
-    std::shared_ptr<basalt::ImuProcess> m_imu_process;
+//    std::shared_ptr<basalt::ImuProcess> m_imu_process;
 
     double m_maximum_pt_kdtree_dis = 1.0;
     double m_maximum_res_dis = 1.0;
@@ -162,6 +152,7 @@ public:
     bool lidar_pushed = false;
     bool flg_exit = false;
     bool flg_reset = false;
+    bool flg_first = true;
 
     // Buffers for measurements
     double cube_len = 0.0;
@@ -175,10 +166,13 @@ public:
     double frame_first_pt_time = 0;
     Eigen::Vector3d position_last = basalt::Zero3d;
 
-  bool initialized;
+//  bool initialized;
 
     tbb::concurrent_bounded_queue<LidarData::Ptr> lidar_data_queue;
     tbb::concurrent_bounded_queue<ImuData<double>::Ptr> imu_data_queue;
+
+    tbb::concurrent_bounded_queue<StatesGroup::Ptr> eskf_lio_queue;
+    tbb::concurrent_bounded_queue<StatesGroup::Ptr>* eskf_vio_queue = nullptr;
 
     tbb::concurrent_bounded_queue<LioVisualizationData::Ptr>* out_vis_queue =
       nullptr;
@@ -235,6 +229,8 @@ public:
     int g_LiDAR_frame_index = 0;
     int m_lio_update_point_step = 1;
 
+    basalt::Calibration<double> calib;
+
     std::shared_ptr<std::thread> processing_thread;
 
     void set_initial_state_cov(basalt::StatesGroup &stat);
@@ -247,29 +243,13 @@ public:
 
 //    bool sync_packages(basalt::MeasureGroup &meas);
 
-    EskfLioEstimator() {
-      initialized = false;
+    EskfLioEstimator(const basalt::Calibration<double>& calibrate) :
+        calib(calibrate) {
+//      initialized = false;
       lidar_data_queue.set_capacity(10);
       imu_data_queue.set_capacity(300);
-//        pubLaserCloudFullRes = m_ros_node_handle.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100);
-//        pubLaserCloudFullRes1 = m_ros_node_handle.advertise<sensor_msgs::PointCloud2>("/cloud_registered1", 100);
-//        pubLaserCloudMap = m_ros_node_handle.advertise<sensor_msgs::PointCloud2>("/Laser_map", 100);
-//        pubOdomAftMapped = m_ros_node_handle.advertise<geometry_msgs::PoseStamped>("/aft_mapped_to_init", 10);
-//        pubPath = m_ros_node_handle.advertise<visualization_msgs::Marker>("/path", 10);
-
-        std::string IMU_topic, LiDAR_topic;
-        LiDAR_topic = "/rslidar_points";
-        IMU_topic = "/camera/imu";
-
-        std::cout << "======= Summary of subscribed topics =======" << std::endl;
-        std::cout << "IMU topic: " << IMU_topic << std::endl;
-        std::cout << "=======        -End-                =======" << std::endl;
-
-//        sub_imu = m_ros_node_handle.subscribe(IMU_topic.c_str(), 2000000, &EskfLioEstimator::imu_cbk, this, ros::TransportHints().tcpNoDelay());
-//        sub_lidar = m_ros_node_handle.subscribe(LiDAR_topic.c_str(), 2000000, &EskfLioEstimator::lidar_cbk, this, ros::TransportHints().tcpNoDelay());
-
-        if ( 1 )
-        {
+      {
+            flg_first = true;
             dense_map_en = true;
             m_lidar_imu_time_delay = 0.0;
             NUM_MAX_ITERATIONS = 2;
@@ -284,7 +264,7 @@ public:
             m_long_rang_pt_dis = 500.0;
             m_if_publish_feature_map = true;
             m_lio_update_point_step = 4;
-        }
+      }
         featsFromMap = boost::make_shared<basalt::PointCloudXYZINormal>();
         cube_points_add = boost::make_shared<basalt::PointCloudXYZINormal>();
         laserCloudFullRes2 = boost::make_shared<basalt::PointCloudXYZINormal>();
@@ -300,8 +280,6 @@ public:
         downSizeFilter.setLeafSize(0.1, 0.1, 0.1);
         blind = 0.1;
         point_filter_num = 1;
-
-//        lio_thread = std::thread(std::bind(&EskfLioEstimator::service_LIO_update, this));
       processing_thread.reset(new std::thread(std::bind(&EskfLioEstimator::proc_func, this)));
     }
     ~EskfLioEstimator() {
@@ -312,20 +290,20 @@ public:
 };
 
     //project lidar frame to world
-    void pointBodyToWorld(basalt::PointType const *const pi, basalt::PointType *const po);
+    void pointBodyToWorld(basalt::PointType const *const pi, basalt::PointType *const po, const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos);
 
     template <typename T>
-    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &pi, Eigen::Matrix<T, 3, 1> &po)
+    void pointBodyToWorld(const Eigen::Matrix<T, 3, 1> &pi, Eigen::Matrix<T, 3, 1> &po, const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos)
     {
         Eigen::Vector3d p_body(pi[0], pi[1], pi[2]);
-        Eigen::Vector3d p_global(g_lio_state.rot_end * (basalt::Lidar_R_to_IMU * p_body + basalt::Lidar_offset_to_IMU) + g_lio_state.pos_end);
+        Eigen::Vector3d p_global(rot * (basalt::Lidar_R_to_IMU * p_body + basalt::Lidar_offset_to_IMU) + pos);
         po[0] = p_global(0);
         po[1] = p_global(1);
         po[2] = p_global(2);
     }
-    void RGBpointBodyToWorld(basalt::PointType const *const pi, pcl::PointXYZI *const po);
+    void RGBpointBodyToWorld(basalt::PointType const *const pi, pcl::PointXYZI *const po, const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos);
     int get_cube_index(const int &i, const int &j, const int &k);
-    void lasermap_fov_segment();
+    void lasermap_fov_segment(const Eigen::Matrix3d &rot, const Eigen::Vector3d &pos);
 
 //    bool get_pointcloud_data_from_ros_message(sensor_msgs::PointCloud2::ConstPtr & msg, pcl::PointCloud<pcl::PointXYZINormal> & pcl_pc);
     int proc_func();

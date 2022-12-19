@@ -33,6 +33,7 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -50,7 +51,7 @@ basalt::VioEstimatorBase::Ptr vio; /// vio
 /// LIO
 basalt::EskfLioEstimator::Ptr lio;  /// lio
 
-basalt::StatesGroup g_lio_state; /// current state
+//basalt::StatesGroup g_lio_state; /// current state
 
 /// For Vis
 tbb::concurrent_bounded_queue<basalt::VioVisualizationData::Ptr> out_vis_queue;
@@ -74,13 +75,20 @@ ros::Publisher lio_kf_cloud_pub;
 std::atomic<bool> terminate = false;
 
 void callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
+//  static sensor_msgs::Imu imu_data = *msg;
+//  double dt = msg->header.stamp.toSec() - imu_data.header.stamp.toSec();
+//  if (dt > 0.01) {
+//    std::cout << "imu_data_dt: " << dt << std::endl;
+//    BASALT_ASSERT(dt <= 0.01);
+//  }
+//  imu_data = *msg;
 //  std::cout << "callback_inertial" << std::endl;
   if (vio->finished || terminate) {
     return;
   }
 
   basalt::ImuData<double>::Ptr data(new basalt::ImuData<double>);
-  int64_t timestamp = msg->header.stamp.sec * 1.0e9 + msg->header.stamp.nsec;
+  int64_t timestamp = msg->header.stamp.toNSec(); //msg->header.stamp.sec * 1.0e9 + msg->header.stamp.nsec;
   data->t_ns = timestamp;
 
   data->accel = basalt::ImuData<double>::Vec3(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
@@ -153,7 +161,7 @@ void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::
   res[1] = get_image_data(msg1);
 
   basalt::OpticalFlowInput::Ptr data(new basalt::OpticalFlowInput);
-  int64_t timestamp = msg0->header.stamp.sec * 1.0e9 + msg0->header.stamp.nsec;
+  int64_t timestamp = msg0->header.stamp.toNSec(); //msg0->header.stamp.sec * 1.0e9 + msg0->header.stamp.nsec;
   data->t_ns = timestamp;
   data->img_data = res;
 
@@ -212,8 +220,8 @@ void callback_lidar(const sensor_msgs::PointCloud2ConstPtr &msg) {
   data->lidar.height = 1;
   data->lidar.width = data->lidar.size();
 
-  data->t_ns = pl_orig.points[0].timestamp * 1.0e9; //lidar_buffer.front()->header.stamp.toSec();
-  int64_t lidar_end_time = data->t_ns + data->lidar.points.back().curvature / double(1000) * 1.0e9;
+  data->t_ns_beg = pl_orig.points[0].timestamp * (double)1.0e9; //lidar_buffer.front()->header.stamp.toSec();
+  int64_t lidar_end_time = data->t_ns_beg + data->lidar.points.back().curvature / double(1000) * (double)1.0e9;
   data->t_ns_end = lidar_end_time;
 
   lio->lidar_data_queue.push(data);
@@ -323,7 +331,7 @@ void vio_vis_loop() {
         traj_marker.pose.orientation.w = 1.0;
 
         std_msgs::ColorRGBA color;
-        color.r = 1.0; color.g = 1.0; color.b = 0.0; color.a = 1.0;
+        color.r = 1.0; color.g = 0.0; color.b = 1.0; color.a = 1.0;
 
         traj_marker.color = color;
         traj_marker.scale.x = traj_marker.scale.y = traj_marker.scale.z = 0.02;
@@ -495,8 +503,13 @@ int main(int argc, char **argv) {
 
   /// lio
   {
-    lio = std::make_shared<basalt::EskfLioEstimator>();
+    lio = std::make_shared<basalt::EskfLioEstimator>(calib);
     lio->out_vis_queue = &out_lio_vis_queue;
+  }
+
+  {
+    lio->eskf_vio_queue = &vio->eskf_vio_queue;
+    vio->eskf_lio_queue = &lio->eskf_lio_queue;
   }
 
   std::string imu_topic = "/camera/imu";

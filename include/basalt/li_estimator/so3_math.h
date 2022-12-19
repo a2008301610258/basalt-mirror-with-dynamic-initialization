@@ -1,9 +1,9 @@
 #ifndef SO3_MATH_H
 #define SO3_MATH_H
 
-#include <math.h>
+#include <cmath>
 #include <Eigen/Core>
-#include <opencv2/opencv.hpp>
+//#include <opencv2/opencv.hpp>
 // #include <common_lib.h>
 
 namespace basalt {

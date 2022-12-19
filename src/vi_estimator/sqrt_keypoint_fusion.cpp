@@ -52,6 +52,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_reduce.h>
 
+#include <basalt/li_estimator/states_group.h>
+
 #include <chrono>
 
 namespace basalt {
@@ -68,7 +70,8 @@ SqrtKeypointFusionEstimator<Scalar_>::SqrtKeypointFusionEstimator(
       lambda(config_.vio_lm_lambda_initial),
       min_lambda(config_.vio_lm_lambda_min),
       max_lambda(config_.vio_lm_lambda_max),
-      lambda_vee(2) {
+      lambda_vee(2),
+      vio_init_time(INT64_MAX){
   obs_std_dev = Scalar(config.vio_obs_std_dev);
   huber_thresh = Scalar(config.vio_obs_huber_thresh);
   calib = calib_.cast<Scalar>();
@@ -167,16 +170,62 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
     data->accel = calib.calib_accel_bias.getCalibrated(data->accel);
     data->gyro = calib.calib_gyro_bias.getCalibrated(data->gyro);
 
+    eskf_state = nullptr;
+
     while (true) {
-      vision_data_queue.pop(curr_frame);
+      std::cout << "================== vio start ===================" << std::endl;
 
-      if (config.vio_enforce_realtime) {
-        // drop current frame if another frame is already in the queue.
-        while (!vision_data_queue.empty()) vision_data_queue.pop(curr_frame);
-      }
+      if (initialized) {
+        std::cout << "eskf lio pop" << std::endl;
+        std::cout << "eskf_lio_queue size: " << eskf_lio_queue->size() << std::endl;
+        eskf_lio_queue->pop(eskf_state);
+        std::cout << std::setprecision(19) << "eskf_lio time: " << eskf_state->last_update_time_ns << std::endl;
+        if (!eskf_state.get()) {
+          break;
+        }
 
-      if (!curr_frame.get()) {
-        break;
+        vision_data_queue.pop(curr_frame);
+        if (config.vio_enforce_realtime) {
+          // drop current frame if another frame is already in the queue.
+          while (!vision_data_queue.empty()) vision_data_queue.pop(curr_frame);
+        }
+        if (!curr_frame.get()) {
+          break;
+        }
+
+        int i = 0;
+        while (curr_frame->t_ns < eskf_state->last_update_time_ns) {
+          std::cout << std::setprecision(19) << "skip cam: " << curr_frame->t_ns << std::endl;
+          std::cout << std::setprecision(19) << i << "-cam-lidar dt time: " << (curr_frame->t_ns - eskf_state->last_update_time_ns) * (double)1.0e-9 << std::endl;
+//      std::cout << "lidar pop : " << lidar_data_queue.size() << std::endl;
+          vision_data_queue.pop(curr_frame);
+          i++;
+        }
+
+        std::cout << std::setprecision(19) << "cam time: " << curr_frame->t_ns << std::endl;
+        std::cout << std::setprecision(19) << i << "-cam-lidar dt time: " << (curr_frame->t_ns - eskf_state->last_update_time_ns) * (double)1.0e-9 << std::endl;
+        std::cout << std::setprecision(19) << " cam-cam dt time: " << (curr_frame->t_ns - prev_frame->t_ns) * 1.0e-9 << std::endl;
+        double cam_lidar_dt = (curr_frame->t_ns - eskf_state->last_update_time_ns) * 1.0e-9;
+        BASALT_ASSERT(curr_frame->t_ns >= eskf_state->last_update_time_ns);
+//        BASALT_ASSERT(i <= 1);
+
+        ///sync lio to vio
+//        auto& last_state = frame_states.at(last_state_t_ns);
+        if (eskf_state->bias_a.norm() < 0.5 && eskf_state->bias_g.norm() < 1.0) {
+          frame_states.at(last_state_t_ns).applyChangeVelBias(diff_vio_lio_rot,
+                                                              eskf_state->vel_end.template cast<Scalar>(),
+                                                              eskf_state->bias_g.template cast<Scalar>(),
+                                                              eskf_state->bias_a.template cast<Scalar>());
+        }
+      } else {
+        vision_data_queue.pop(curr_frame);
+        if (config.vio_enforce_realtime) {
+          // drop current frame if another frame is already in the queue.
+          while (!vision_data_queue.empty()) vision_data_queue.pop(curr_frame);
+        }
+        if (!curr_frame.get()) {
+          break;
+        }
       }
 
       Timer t_total;
@@ -219,13 +268,26 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
         if (config.vio_debug || config.vio_extended_logging) {
           logMargNullspace();
         }
+
         /// eskf init
-//        StatesGroup::Ptr eskf_state = std::make_shared<StatesGroup>();
+        eskf_state.reset(new StatesGroup);
+        eskf_state->init(T_w_i_init.so3().matrix().template cast<double>(),
+                         T_w_i_init.translation().template cast<double>(),
+                         vel_w_i_init.template cast<double>(),
+                         bg.template cast<double>(),
+                         ba.template cast<double>());
+        eskf_state->last_update_time_ns = curr_frame->t_ns;
+
+        /// lio measurement
+        lio_state_prediction_meas[curr_frame->t_ns] = *eskf_state;
+
+        std::cout << std::setprecision(19) << "cam time: " << curr_frame->t_ns << std::endl;
 
         initialized = true;
       }
 
       if (prev_frame) {
+        Eigen::aligned_vector<ImuData<Scalar>> imu_data;
         // preintegrate measurements
 
         auto last_state = frame_states.at(last_state_t_ns);
@@ -245,8 +307,11 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
           data->gyro = calib.calib_gyro_bias.getCalibrated(data->gyro);
         }
 
+//        std::cout << "getParam: " << calib.calib_accel_bias.getParam() << std::endl;
+
         while (data->t_ns <= curr_frame->t_ns) {
           meas->integrate(*data, accel_cov, gyro_cov);
+          imu_data.emplace_back(*data);
           data = popFromImuDataQueue();
           if (!data) break;
           data->accel = calib.calib_accel_bias.getCalibrated(data->accel);
@@ -258,11 +323,148 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
           int64_t tmp = data->t_ns;
           data->t_ns = curr_frame->t_ns;
           meas->integrate(*data, accel_cov, gyro_cov);
+          imu_data.emplace_back(*data);
           data->t_ns = tmp;
         }
+
+        /// eskf propagation
+        std::deque<ImuTypeData> imu_queue;
+        for (const auto &imu : imu_data) {
+          if (imu.t_ns > eskf_state->last_update_time_ns) {
+            imu_queue.push_back(ImuTypeData(imu.t_ns, imu.accel.template cast<double>(), imu.gyro.template cast<double>()));
+          }
+        }
+        double start_dt = (imu_queue.front().tm_ns - eskf_state->last_update_time_ns) * double(1e-9);
+        double end_dt = (curr_frame->t_ns - imu_queue.back().tm_ns) * double(1e-9);
+        std::cout << "start_dt: " << start_dt << " end_dt: " << end_dt << std::endl;
+        if (start_dt > 0.0) {
+          ImuTypeData imu = imu_queue.front();
+          imu.tm_ns = eskf_state->last_update_time_ns;
+          imu_queue.push_front(imu);
+        }
+        if (end_dt > 0.0) {
+          ImuTypeData imu = imu_queue.back();
+          imu.tm_ns = curr_frame->t_ns;
+          imu_queue.push_back(imu);
+        }
+        StatesGroup state_aft_integration;
+        state_aft_integration = StateHelper::eskf_state_propagate(*eskf_state, imu_queue, 1);
+        std::cout << std::setprecision(19) << "v_imu.back().tm: " << imu_queue.back().tm_ns << std::endl;
+        std::cout << std::setprecision(19) << "cam->state:(state_aft_integration) " << state_aft_integration.last_update_time_ns << std::endl;
+        *eskf_state = state_aft_integration;
+
+        /// lio measurement
+        lio_state_prediction_meas[curr_frame->t_ns] = *eskf_state;
       }
 
       measure(curr_frame, meas);
+
+      {
+        //TODO:
+        /// earse lio_state_prediction_meas
+        std::set<int64_t> lio_meas_to_delete;
+        for (auto iter = lio_state_prediction_meas.begin(); iter != lio_state_prediction_meas.end(); ++iter) {
+
+          bool need_delete = true;
+          if (frame_poses.find(iter->first) != frame_poses.end()) {
+            need_delete = true;
+          }
+          if (frame_states.find(iter->first) != frame_states.end()) {
+            need_delete = false;
+          }
+          if (need_delete) {
+            lio_meas_to_delete.insert(iter->first);
+          }
+        }
+
+        for (const int64_t id : lio_meas_to_delete) {
+          lio_state_prediction_meas.erase(id);
+        }
+        BASALT_ASSERT(lio_state_prediction_meas.size() == frame_states.size());
+
+//        {
+//          std::cout << "------------" << std::endl;
+//          for (auto it = frame_poses.begin(); it != frame_poses.end(); ++it) {
+//            std::cout << std::setprecision(19) << "frame_poses: " << it->first << std::endl;
+//          }
+//          std::cout << "------------" << std::endl;
+//          for (auto it = frame_states.begin(); it != frame_states.end(); ++it) {
+//            std::cout << std::setprecision(19) << "frame_states: " << it->first << std::endl;
+//          }
+//          std::cout << "------------" << std::endl;
+//          for (auto it = lio_state_prediction_meas.begin(); it != lio_state_prediction_meas.end(); ++it) {
+//            std::cout << std::setprecision(19) << "meas: " << it->first << std::endl;
+//          }
+//          std::cout << "------------" << std::endl;
+//        }
+
+        StatesGroup state_aft_integration = *eskf_state;
+
+        auto vio_state = frame_states.at(state_aft_integration.last_update_time_ns);
+
+        {
+          std::cout << "--------vio state-------" << std::endl;
+          auto curr_state = vio_state.getState();
+          std::cout << "rot: " << curr_state.T_w_i.so3().angleX() << "," << curr_state.T_w_i.so3().angleY() << ","
+                    << curr_state.T_w_i.so3().angleZ() << std::endl;
+          std::cout << "pos: " << curr_state.T_w_i.translation().x() << "," << curr_state.T_w_i.translation().y() << ","
+                    << curr_state.T_w_i.translation().z()<< std::endl;
+          std::cout << "vel: " << curr_state.vel_w_i.x() << "," << curr_state.vel_w_i.y() << "," << curr_state.vel_w_i.z() << std::endl;
+          std::cout << "bg: " << curr_state.bias_gyro.x() << "," << curr_state.bias_gyro.y() << "," << curr_state.bias_gyro.z() << std::endl;
+          std::cout << "ba: " << curr_state.bias_accel.x() << "," << curr_state.bias_accel.y() << "," << curr_state.bias_accel.z() << std::endl;
+
+          std::cout << "--------lio state-----" << std::endl;
+          Sophus::SO3<double> lio_so3(state_aft_integration.rot_end);
+          std::cout << "rot: " << lio_so3.angleX() << "," << lio_so3.angleY() << "," << lio_so3.angleZ() << std::endl;
+          std::cout << "pos: " << state_aft_integration.pos_end.x() << "," << state_aft_integration.pos_end.y() << ","
+                    << state_aft_integration.pos_end.z() << std::endl;
+          std::cout << "vel: " << state_aft_integration.vel_end.x() << "," << state_aft_integration.vel_end.y() << ","
+                    << state_aft_integration.vel_end.z() << std::endl;
+          std::cout << "bg: " << state_aft_integration.bias_g.x() << "," << state_aft_integration.bias_g.y() << ","
+                    << state_aft_integration.bias_g.z() << std::endl;
+          std::cout << "ba: " << state_aft_integration.bias_a.x() << "," << state_aft_integration.bias_a.y() << ","
+                    << state_aft_integration.bias_a.z() << std::endl;
+        }
+
+        std::cout << std::setprecision(19) << "cam->state: " << state_aft_integration.last_update_time_ns << std::endl;
+
+        if (opt_started) {
+          if (vio_init_time == INT64_MAX) {
+            vio_init_time = last_state_t_ns;
+          }
+
+          if ((state_aft_integration.last_update_time_ns - vio_init_time) > 1e9) {
+            if (vio_state.getState().bias_accel.norm() < 0.5) {
+              state_aft_integration.bias_a = vio_state.getState().bias_accel.template cast<double>();
+            }
+            state_aft_integration.bias_g = vio_state.getState().bias_gyro.template cast<double>();
+            state_aft_integration.vel_end = diff_vio_lio_rot.template cast<double>() * vio_state.getState().vel_w_i.template cast<double>();
+
+            Eigen::Matrix3d temp_R = diff_vio_lio_rot.template cast<double>() * vio_state.getState().T_w_i.so3().matrix().template cast<double>();
+            Eigen::Vector3d temp_T = diff_vio_lio_pos.template cast<double>() + vio_state.getState().T_w_i.translation().template cast<double>();
+
+            Eigen::Quaterniond q_I(1.0, 0.0, 0.0, 0.0);
+            double angular_diff = Eigen::Quaterniond (state_aft_integration.rot_end * temp_R.transpose()).angularDistance(q_I) * 57.3;
+            double t_diff = (temp_T - state_aft_integration.pos_end).norm();
+            if ((t_diff < 0.2) &&  (angular_diff < 2.0)) {
+              state_aft_integration.pos_end = temp_T;
+              state_aft_integration.rot_end = temp_R;
+              std::cout << "change lio state(R,t)" << std::endl;
+            }
+          }
+        }
+        if (opt_started) {
+          Eigen::Quaternion<Scalar> diff_vio_lio_q(diff_vio_lio_rot);
+          if ((diff_vio_lio_pos.norm() > 0.1) && (diff_vio_lio_q.angularDistance(Eigen::Quaternion<Scalar>::Identity()) * Scalar(57.3) > Scalar(0.1))) {
+            std::cout << "refine system" << std::endl;
+            refine_system();
+            diff_vio_lio_rot.setIdentity();
+            diff_vio_lio_pos.setZero();
+          }
+        }
+        eskf_vio_queue.push(std::make_shared<StatesGroup>(state_aft_integration));
+      }
+
       prev_frame = curr_frame;
 
       std::cout << "=============== vio time: " << t_total.elapsed() * 1000.0 << " ms ==============" << std::endl;
@@ -278,6 +480,19 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
   };
 
   processing_thread.reset(new std::thread(proc_func));
+}
+
+template <class Scalar_>
+void SqrtKeypointFusionEstimator<Scalar_>::refine_system() {
+  for (auto iter = frame_poses.begin(); iter != frame_poses.end(); ++iter) {
+    iter->second.applyChangePose(diff_vio_lio_rot, diff_vio_lio_pos);
+  }
+  for (auto iter = frame_states.begin(); iter != frame_states.end(); ++iter) {
+    iter->second.applyChangePoseVel(diff_vio_lio_rot, diff_vio_lio_pos);
+  }
+  for (auto iter = imu_meas.begin(); iter != imu_meas.end(); ++iter) {
+    iter->second.applyChange(diff_vio_lio_rot);
+  }
 }
 
 template <class Scalar_>
@@ -336,6 +551,46 @@ bool SqrtKeypointFusionEstimator<Scalar_>::measure(
     frame_states[last_state_t_ns] = PoseVelBiasStateWithLin<Scalar>(next_state);
 
     imu_meas[meas->get_start_t_ns()] = *meas;
+
+    {
+      /// diff_state
+      std::cout << "----------- diff state ----------" << std::endl;
+      auto vio_state = next_state;
+      auto lio_state = lio_state_prediction_meas.at(last_state_t_ns);
+      diff_vio_lio_rot = lio_state.rot_end.template cast<Scalar>() * vio_state.T_w_i.so3().matrix().transpose();
+      diff_vio_lio_pos = lio_state.pos_end.template cast<Scalar>() - vio_state.T_w_i.translation();
+
+      Eigen::Quaternion<Scalar> vio_q(vio_state.T_w_i.so3().matrix());
+      std::cout << "vio_q: " << vio_q.x() << "," << vio_q.y() << "," << vio_q.z() << "," << vio_q.w() << std::endl;
+      std::cout << "vio_p: " << vio_state.T_w_i.translation().x() << "," << vio_state.T_w_i.translation().y() << "," << vio_state.T_w_i.translation().z() << std::endl;
+      std::cout << "vio_v: " << vio_state.vel_w_i.x() << "," << vio_state.vel_w_i.y() << "," << vio_state.vel_w_i.z() << std::endl;
+      std::cout << "vio_bg: " << vio_state.bias_gyro.x() << "," << vio_state.bias_gyro.y() << "," << vio_state.bias_gyro.z() << std::endl;
+      std::cout << "vio_ba: " << vio_state.bias_accel.x() << "," << vio_state.bias_accel.y() << "," << vio_state.bias_accel.z() << std::endl;
+
+      Eigen::Quaternion<Scalar> lio_q(lio_state.rot_end.template cast<Scalar>());
+      std::cout << "lio_q: " << lio_q.x() << "," << lio_q.y() << "," << lio_q.z() << "," << lio_q.w() << std::endl;
+      std::cout << "lio_p: " << lio_state.pos_end.x() << "," << lio_state.pos_end.y() << "," << lio_state.pos_end.z() << std::endl;
+      std::cout << "lio_v: " << lio_state.vel_end.x() << "," << lio_state.vel_end.y() << "," << lio_state.vel_end.z() << std::endl;
+      std::cout << "lio_bg: " << lio_state.bias_g.x() << "," << lio_state.bias_g.y() << "," << lio_state.bias_g.z() << std::endl;
+      std::cout << "lio_ba: " << lio_state.bias_a.x() << "," << lio_state.bias_a.y() << "," << lio_state.bias_a.z() << std::endl;
+
+      Eigen::Quaternion<Scalar> diff_vio_lio_quat(diff_vio_lio_rot);
+      std::cout << "diff_vio_lio_rot: " << diff_vio_lio_quat.x() << "," << diff_vio_lio_quat.y() << ","
+                << diff_vio_lio_quat.z() << "," << diff_vio_lio_quat.w() << std::endl;
+      std::cout << "diff_vio_lio_pos: " << diff_vio_lio_pos.x() << "," << diff_vio_lio_pos.y() << ","
+                << diff_vio_lio_pos.z() << std::endl;
+
+      if (diff_vio_lio_pos.norm() > 1.0) {
+        std::cout << "need refine vio system" << std::endl;
+      }
+
+      /// eskf update
+//      next_state.T_w_i = Sophus::SE3<Scalar>(lio_state.rot_end.template cast<Scalar>(), lio_state.pos_end.template cast<Scalar>());
+//      frame_states[last_state_t_ns] = PoseVelBiasStateWithLin<Scalar>(next_state);
+    }
+  } else {
+    diff_vio_lio_rot.setIdentity();
+    diff_vio_lio_pos.setZero();
   }
 
   // save results
@@ -564,6 +819,8 @@ void SqrtKeypointFusionEstimator<Scalar_>::marginalize(
 
   Timer t_total;
 
+  std::cout << "pose size: " << frame_poses.size() << " state size: " << frame_states.size() << std::endl;
+
   if (frame_poses.size() > max_kfs || frame_states.size() >= max_states) {
     // Marginalize
 
@@ -738,10 +995,13 @@ void SqrtKeypointFusionEstimator<Scalar_>::marginalize(
           this, aom, lqr_options, &marg_data, &ild, &kfs_to_marg,
           &lost_landmaks, last_state_to_marg);
 
+      std::cout << "marg linearizeProblem" << std::endl;
       lqr->linearizeProblem();
+      std::cout << "marg performQR" << std::endl;
       lqr->performQR();
 
       if (is_lin_sqrt && marg_data.is_sqrt) {
+        std::cout << "marg get_dense_Q2Jp_Q2r" << std::endl;
         lqr->get_dense_Q2Jp_Q2r(Q2Jp_or_H, Q2r_or_b);
       } else {
         lqr->get_dense_H_b(Q2Jp_or_H, Q2r_or_b);
@@ -893,6 +1153,7 @@ void SqrtKeypointFusionEstimator<Scalar_>::marginalize(
     {
       Timer t;
       if (is_lin_sqrt && marg_data.is_sqrt) {
+        std::cout << "marg marginalizeHelperSqrtToSqrt" << std::endl;
         MargHelper<Scalar>::marginalizeHelperSqrtToSqrt(
             Q2Jp_or_H, Q2r_or_b, idx_to_keep, idx_to_marg, marg_H_new,
             marg_b_new);
@@ -905,6 +1166,8 @@ void SqrtKeypointFusionEstimator<Scalar_>::marginalize(
                                                     idx_to_keep, idx_to_marg,
                                                     marg_H_new, marg_b_new);
       }
+
+      std::cout << "marg marginalizeHelperSqrtToSqrt done" << std::endl;
 
       stats_sums_.add("marg_helper", t.elapsed()).format("ms");
     }
@@ -1025,6 +1288,8 @@ void SqrtKeypointFusionEstimator<Scalar_>::optimize() {
   if (opt_started || frame_states.size() > 4) {
     opt_started = true;
 
+    BASALT_ASSERT(lio_state_prediction_meas.size() == frame_states.size());
+
     // harcoded configs
     // bool scale_Jp = config.vio_scale_jacobian && is_qr_solver();
     // bool scale_Jl = config.vio_scale_jacobian && is_qr_solver();
@@ -1117,6 +1382,7 @@ void SqrtKeypointFusionEstimator<Scalar_>::optimize() {
 
         // linearize residuals
         bool numerically_valid;
+//        std::cout << "linearizeProblem" << std::endl;
         error_total = lqr->linearizeProblem(&numerically_valid);
         BASALT_ASSERT_STREAM(
             numerically_valid,
@@ -1136,6 +1402,7 @@ void SqrtKeypointFusionEstimator<Scalar_>::optimize() {
         //        }
 
         // marginalize points in place
+//        std::cout << "performQR" << std::endl;
         lqr->performQR();
         stats.add("performQR", t.reset()).format("ms");
       }
@@ -1208,6 +1475,7 @@ void SqrtKeypointFusionEstimator<Scalar_>::optimize() {
           MatX H;
           VecX b;
 
+//          std::cout << "get_dense_H_b" << std::endl;
           lqr->get_dense_H_b(H, b);
 
           stats.add("get_dense_H_b", t.reset()).format("ms");
@@ -1250,7 +1518,9 @@ void SqrtKeypointFusionEstimator<Scalar_>::optimize() {
           inc = -inc;
 
           Timer t;
+//          std::cout << "backSubstitute" << std::endl;
           l_diff = lqr->backSubstitute(inc);
+//          std::cout << "backSubstitute done" << std::endl;
           stats.add("backSubstitute", t.reset()).format("ms");
         }
 
@@ -1438,8 +1708,33 @@ template <class Scalar_>
 void SqrtKeypointFusionEstimator<Scalar_>::optimize_and_marg(
     const std::map<int64_t, int>& num_points_connected,
     const std::unordered_set<KeypointId>& lost_landmaks) {
+  std::cout << "-----vio optimize------" << std::endl;
   optimize();
+
+  auto vio_state = frame_states.at(last_state_t_ns);
+
+  {
+    std::cout << "--------vio state(after opti)-------" << std::endl;
+    auto curr_state = vio_state.getState();
+    std::cout << "rot: " << curr_state.T_w_i.so3().angleX() << ","
+              << curr_state.T_w_i.so3().angleY() << ","
+              << curr_state.T_w_i.so3().angleZ() << std::endl;
+    std::cout << "pos: " << curr_state.T_w_i.translation().x() << ","
+              << curr_state.T_w_i.translation().y() << ","
+              << curr_state.T_w_i.translation().z() << std::endl;
+    std::cout << "vel: " << curr_state.vel_w_i.x() << ","
+              << curr_state.vel_w_i.y() << "," << curr_state.vel_w_i.z()
+              << std::endl;
+    std::cout << "bg: " << curr_state.bias_gyro.x() << ","
+              << curr_state.bias_gyro.y() << "," << curr_state.bias_gyro.z()
+              << std::endl;
+    std::cout << "ba: " << curr_state.bias_accel.x() << ","
+              << curr_state.bias_accel.y() << "," << curr_state.bias_accel.z()
+              << std::endl;
+  }
+  std::cout << "------vio marginalize------" << std::endl;
   marginalize(num_points_connected, lost_landmaks);
+  std::cout << "-------vio done------" << std::endl;
 
 //  for (auto it = frame_poses.begin(); it != frame_poses.end(); ++it) {
 //    auto sr = it->second.getPose().so3().matrix();

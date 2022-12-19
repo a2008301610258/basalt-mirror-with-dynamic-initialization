@@ -35,6 +35,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #pragma once
 
 #include <basalt/vi_estimator/landmark_database.h>
+#include <basalt/li_estimator/states_group.h>
 
 namespace basalt {
 
@@ -159,6 +160,7 @@ class BundleAdjustmentBase {
 
   Eigen::aligned_map<int64_t, PoseVelBiasStateWithLin<Scalar>> frame_states;
   Eigen::aligned_map<int64_t, PoseStateWithLin<Scalar>> frame_poses;
+  Eigen::aligned_map<int64_t, StatesGroup> lio_state_prediction_meas;
 
   // Point management
   LandmarkDatabase<Scalar> lmdb;

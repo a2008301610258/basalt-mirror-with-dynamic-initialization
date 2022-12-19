@@ -167,6 +167,17 @@ LinearizationAbsQR<Scalar, POSE_SIZE>::LinearizationAbsQR(
     }
   }
 
+  for (const auto& kv : estimator->lio_state_prediction_meas) {
+    if (kv.first > last_state_to_marg) {  /// for marg aom
+      break;
+    }
+    lio_prior_blocks.emplace_back(
+        new LioPriorBlock<Scalar>(kv.second, aom));
+  }
+
+  std::cout << "frame_states size: " << estimator->frame_states.size() << std::endl;
+  std::cout << "lio_prior_blocks size: " << lio_prior_blocks.size() << std::endl;
+
   //    std::cout << "num_rows_Q2r " << num_rows_Q2r << " num_poses " <<
   //    num_cameras
   //              << std::endl;
@@ -258,6 +269,10 @@ Scalar LinearizationAbsQR<Scalar, POSE_SIZE>::linearizeProblem(
     }
   }
 
+  for (auto& lio_prior_block : lio_prior_blocks) {
+    reduction_res.first += lio_prior_block->linearizeLioPrior(estimator->frame_states);
+  }
+
   if (marg_lin_data) {
     Scalar marg_prior_error;
     estimator->computeMargPriorError(*marg_lin_data, marg_prior_error);
@@ -308,6 +323,10 @@ Scalar LinearizationAbsQR<Scalar, POSE_SIZE>::backSubstitute(
     for (auto& imu_block : imu_blocks) {
       imu_block->backSubstitute(pose_inc, l_diff);
     }
+  }
+
+  for (auto& lio_prior_block : lio_prior_blocks) {
+    lio_prior_block->backSubstitute(pose_inc, l_diff);
   }
 
   if (marg_lin_data) {
@@ -489,12 +508,22 @@ void LinearizationAbsQR<Scalar, POSE_SIZE>::get_dense_Q2Jp_Q2r(
 
   // Space for IMU data if present
   size_t imu_start_idx = total_size;
+  std::cout << "imu_start_idx: " << imu_start_idx << std::endl;
   if (imu_lin_data) {
     total_size += imu_lin_data->imu_meas.size() * POSE_VEL_BIAS_SIZE;
   }
 
+  size_t lio_prior_start_idx = total_size;
+  std::cout << "lio_prior_start_idx: " << lio_prior_start_idx << std::endl;
+  if (!lio_prior_blocks.empty()) {
+    total_size += lio_prior_blocks.size() * POSE_VEL_BIAS_SIZE;
+  }
+
+  std::cout << "lio_prior_blocks size: " << lio_prior_blocks.size() << std::endl;
+
   // Space for damping if present
   size_t damping_start_idx = total_size;
+  std::cout << "damping_start_idx: " << damping_start_idx << std::endl;
   if (hasPoseDamping()) {
     total_size += poses_size;
   }
@@ -503,6 +532,7 @@ void LinearizationAbsQR<Scalar, POSE_SIZE>::get_dense_Q2Jp_Q2r(
   size_t marg_start_idx = total_size;
   if (marg_lin_data) total_size += marg_lin_data->H.rows();
 
+  std::cout << "total_size: " << total_size << " poses_size: " << poses_size << std::endl;
   Q2Jp.setZero(total_size, poses_size);
   Q2r.setZero(total_size);
 
@@ -520,12 +550,25 @@ void LinearizationAbsQR<Scalar, POSE_SIZE>::get_dense_Q2Jp_Q2r(
 
   if (imu_lin_data) {
     size_t start_idx = imu_start_idx;
+
     for (const auto& imu_block : imu_blocks) {
       imu_block->add_dense_Q2Jp_Q2r(Q2Jp, Q2r, start_idx);
       start_idx += POSE_VEL_BIAS_SIZE;
     }
   }
 
+  std::cout << "lio prior block" << std::endl;
+
+  if (!lio_prior_blocks.empty()) {
+    size_t start_idx = lio_prior_start_idx;
+
+    for (const auto& lio_prior_block : lio_prior_blocks) {
+      std::cout << "start_idx: " << start_idx << std::endl;
+      lio_prior_block->add_dense_Q2Jp_Q2r(Q2Jp, Q2r, start_idx);
+      start_idx += POSE_VEL_BIAS_SIZE;
+    }
+  }
+  std::cout << "get_dense_Q2Jp_Q2r_pose_damping" << std::endl;
   // Add damping
   get_dense_Q2Jp_Q2r_pose_damping(Q2Jp, damping_start_idx);
 
@@ -579,6 +622,9 @@ void LinearizationAbsQR<Scalar, POSE_SIZE>::get_dense_H_b(MatX& H,
 
   // Add imu
   add_dense_H_b_imu(r.H_, r.b_);
+
+  /// Add Lio Prior
+  add_dense_H_b_lio_prior(r.H_, r.b_);
 
   // Add damping
   add_dense_H_b_pose_damping(r.H_);
@@ -689,6 +735,30 @@ void LinearizationAbsQR<Scalar, POSE_SIZE>::add_dense_H_b_imu(MatX& H,
 
   for (const auto& imu_block : imu_blocks) {
     imu_block->add_dense_H_b(accum);
+  }
+
+  H += accum.getH();
+  b += accum.getB();
+}
+
+template <typename Scalar, int POSE_SIZE>
+void LinearizationAbsQR<Scalar, POSE_SIZE>::add_dense_H_b_lio_prior(DenseAccumulator<Scalar>& accum) const {
+  if (lio_prior_blocks.empty()) return;
+
+  for (const auto& lio_prior_block : lio_prior_blocks) {
+    lio_prior_block->add_dense_H_b(accum);
+  }
+}
+
+template <typename Scalar, int POSE_SIZE>
+void LinearizationAbsQR<Scalar, POSE_SIZE>::add_dense_H_b_lio_prior(MatX& H, VecX& b) const {
+  if (lio_prior_blocks.empty()) return;
+
+  DenseAccumulator<Scalar> accum;
+  accum.reset(b.size());
+
+  for (const auto& lio_prior_block : lio_prior_blocks) {
+    lio_prior_block->add_dense_H_b(accum);
   }
 
   H += accum.getH();

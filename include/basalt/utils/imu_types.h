@@ -127,6 +127,25 @@ struct PoseVelBiasStateWithLin {
     state_current = state_linearized;
   }
 
+  void applyChangePoseVel(const Eigen::Matrix3<Scalar>& d_rot, const Eigen::Vector3<Scalar>& d_pos) {
+    state_linearized.T_w_i.so3() = Sophus::SO3<Scalar>(d_rot) * state_linearized.T_w_i.so3();
+    state_linearized.T_w_i.translation() = state_linearized.T_w_i.translation() + d_pos;
+    state_linearized.vel_w_i = d_rot * state_linearized.vel_w_i;
+
+    state_current.T_w_i.so3() = Sophus::SO3<Scalar>(d_rot) * state_current.T_w_i.so3();
+    state_current.T_w_i.translation() = state_current.T_w_i.translation() + d_pos;
+    state_current.vel_w_i = d_rot * state_current.vel_w_i;
+  }
+
+  void applyChangeVelBias(const Eigen::Matrix3<Scalar>& d_rot,
+                          const Eigen::Vector3<Scalar>& vel,
+                          const Eigen::Vector3<Scalar>& bg,
+                          const Eigen::Vector3<Scalar>& ba) {
+    state_linearized.bias_gyro = bg;
+    state_linearized.bias_accel = ba;
+    state_linearized.vel_w_i = d_rot.transpose() * vel;
+  }
+
   void applyInc(const VecN& inc) {
     if (!linearized) {
       state_linearized.applyInc(inc);
@@ -265,6 +284,14 @@ struct PoseStateWithLin {
   void setTransformToWorld(SE3 transform) {
     T_w_i_current = transform * T_w_i_current;
     pose_linearized.T_w_i = transform * pose_linearized.T_w_i;
+  }
+
+  void applyChangePose(const Eigen::Matrix3<Scalar>& rot, const Eigen::Vector3<Scalar>& pos) {
+    T_w_i_current.so3() = Sophus::SO3<Scalar>(rot) * T_w_i_current.so3();
+    T_w_i_current.translation() = T_w_i_current.translation() + pos;
+
+    pose_linearized.T_w_i.so3() = Sophus::SO3<Scalar>(rot) * pose_linearized.T_w_i.so3();
+    pose_linearized.T_w_i.translation() = pose_linearized.T_w_i.translation() + pos;
   }
 
   inline void applyInc(const VecN& inc) {

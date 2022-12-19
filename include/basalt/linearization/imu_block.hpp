@@ -104,6 +104,13 @@ class ImuBlock {
         Scalar(0.5) *
         (accel_bias_weight_dt.asDiagonal() * res_ba).squaredNorm();
 
+//    std::cout << "imu cov(p r v): " << std::endl;
+//    std::cout << imu_meas->get_cov() << std::endl;
+
+//    std::cout << "imu cov(bg ba): " << std::endl;
+//    std::cout << 1.0 / (gyro_bias_weight_dt.x() * gyro_bias_weight_dt.x()) << std::endl;
+//    std::cout << 1.0 / (accel_bias_weight_dt.x() * accel_bias_weight_dt.x()) << std::endl;
+
     return imu_error + bg_error + ba_error;
   }
 

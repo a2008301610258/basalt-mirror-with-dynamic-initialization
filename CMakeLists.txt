@@ -315,6 +315,7 @@ target_sources(basalt
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/io/marg_data_io.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/block_diagonal.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/imu_block.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/lio_prior_block.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/landmark_block.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/landmark_block_abs_dynamic.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/basalt/linearization/linearization_abs_qr.hpp
@@ -452,7 +453,7 @@ if(catkin_FOUND)
           ${catkin_INCLUDE_DIRS}
           ${PCL_INCLUDE_DIRS})
   add_executable(basalt_fusion_ros
-          src/li_estimator/imu_processing.cpp
+#          src/li_estimator/imu_processing.cpp
           src/li_estimator/ikd_tree.cpp
 #          src/li_estimator/r3live_lio.cpp
           src/li_estimator/eskf_lio.cpp

@@ -43,7 +43,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <basalt/vi_estimator/vio_estimator.h>
 
 #include <basalt/imu/preintegration.h>
-#include <basalt/li_estimator/common_lib.h>
 
 namespace basalt {
 
@@ -129,6 +128,8 @@ class SqrtKeypointFusionEstimator : public VioEstimatorBase,
                    const std::unordered_set<KeypointId>& lost_landmaks);
   void optimize();
 
+  void refine_system();
+
   void debug_finalize() override;
 
   void logMargNullspace();
@@ -211,6 +212,7 @@ class SqrtKeypointFusionEstimator : public VioEstimatorBase,
  private:
   using BundleAdjustmentBase<Scalar>::frame_poses;
   using BundleAdjustmentBase<Scalar>::frame_states;
+  using BundleAdjustmentBase<Scalar>::lio_state_prediction_meas;
   using BundleAdjustmentBase<Scalar>::lmdb;
   using BundleAdjustmentBase<Scalar>::obs_std_dev;
   using BundleAdjustmentBase<Scalar>::huber_thresh;
@@ -260,6 +262,9 @@ class SqrtKeypointFusionEstimator : public VioEstimatorBase,
   ExecutionStats stats_all_;
   ExecutionStats stats_sums_;
 
-//  tbb::concurrent_bounded_queue<StatesGroup::Ptr> eskf_states;
+  StatesGroup::Ptr eskf_state;
+  int64_t vio_init_time;
+  Eigen::Matrix3<Scalar> diff_vio_lio_rot;
+  Eigen::Vector3<Scalar> diff_vio_lio_pos;
 };
 }  // namespace basalt

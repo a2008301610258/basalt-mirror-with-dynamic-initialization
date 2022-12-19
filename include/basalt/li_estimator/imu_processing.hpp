@@ -13,25 +13,22 @@
 #include <pcl/common/io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <condition_variable>
-#include <nav_msgs/Odometry.h>
-#include <pcl/common/transforms.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <tf/transform_broadcaster.h>
-#include <eigen_conversions/eigen_msg.h>
-#include <pcl_conversions/pcl_conversions.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/PointCloud2.h>
+//#include <condition_variable>
+//#include <nav_msgs/Odometry.h>
+//#include <pcl/common/transforms.h>
+//#include <pcl/kdtree/kdtree_flann.h>
+//#include <tf/transform_broadcaster.h>
+//#include <eigen_conversions/eigen_msg.h>
+//#include <pcl_conversions/pcl_conversions.h>
+//#include <sensor_msgs/Imu.h>
+//#include <sensor_msgs/PointCloud2.h>
 // #include <fast_lio/States.h>
-#include <geometry_msgs/Vector3.h>
+//#include <geometry_msgs/Vector3.h>
 
 namespace basalt {
 
 /// *************Preconfiguration
 #define MAX_INI_COUNT (20)
-inline bool time_list(PointType &x, PointType &y) {
-  return (x.curvature < y.curvature);
-};
 bool check_state(StatesGroup &state_inout);
 void check_in_out_state(const StatesGroup &state_in, StatesGroup &state_inout);
 
@@ -39,6 +36,7 @@ void check_in_out_state(const StatesGroup &state_in, StatesGroup &state_inout);
 class ImuProcess {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  using Ptr = std::shared_ptr<ImuProcess>;
 
   ImuProcess();
   ~ImuProcess();
