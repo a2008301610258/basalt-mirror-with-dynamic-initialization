@@ -211,7 +211,11 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
 
         ///sync lio to vio
 //        auto& last_state = frame_states.at(last_state_t_ns);
-        if (eskf_state->bias_a.norm() < 0.5 && eskf_state->bias_g.norm() < 1.0) {
+        std::cout << "eskf_state->bias_a.norm(): " << eskf_state->bias_a.norm() << std::endl;
+        std::cout << "eskf_state->bias_g.norm(): " << eskf_state->bias_g.norm() << std::endl;
+//        if (eskf_state->bias_a.norm() < 0.5 && eskf_state->bias_g.norm() < 1.0)
+        {
+          std::cout << "sync_lio_to_vio" << std::endl;
           frame_states.at(last_state_t_ns).applyChangeVelBias(diff_vio_lio_rot,
                                                               eskf_state->vel_end.template cast<Scalar>(),
                                                               eskf_state->bias_g.template cast<Scalar>(),
@@ -438,7 +442,7 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
               state_aft_integration.bias_a = vio_state.getState().bias_accel.template cast<double>();
             }
             state_aft_integration.bias_g = vio_state.getState().bias_gyro.template cast<double>();
-            state_aft_integration.vel_end = diff_vio_lio_rot.template cast<double>() * vio_state.getState().vel_w_i.template cast<double>();
+//            state_aft_integration.vel_end = diff_vio_lio_rot.template cast<double>() * vio_state.getState().vel_w_i.template cast<double>();
 
             Eigen::Matrix3d temp_R = diff_vio_lio_rot.template cast<double>() * vio_state.getState().T_w_i.so3().matrix().template cast<double>();
             Eigen::Vector3d temp_T = diff_vio_lio_pos.template cast<double>() + vio_state.getState().T_w_i.translation().template cast<double>();
@@ -446,6 +450,9 @@ void SqrtKeypointFusionEstimator<Scalar_>::initialize(const Eigen::Vector3d& bg_
             Eigen::Quaterniond q_I(1.0, 0.0, 0.0, 0.0);
             double angular_diff = Eigen::Quaterniond (state_aft_integration.rot_end * temp_R.transpose()).angularDistance(q_I) * 57.3;
             double t_diff = (temp_T - state_aft_integration.pos_end).norm();
+
+            std::cout << "angular_diff: " << angular_diff << std::endl;
+            std::cout << "t_diff: " << t_diff << std::endl;
             if ((t_diff < 0.2) &&  (angular_diff < 2.0)) {
               state_aft_integration.pos_end = temp_T;
               state_aft_integration.rot_end = temp_R;

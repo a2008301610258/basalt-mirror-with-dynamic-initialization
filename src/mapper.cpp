@@ -179,6 +179,7 @@ int main(int argc, char** argv) {
 
   load_data(cam_calib_path, marg_data_path);
 
+  /// add marg data using NFR
   for (auto& kv : marg_data) {
     nrf_mapper->addMargData(kv.second);
   }

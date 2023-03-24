@@ -143,7 +143,7 @@ struct PoseVelBiasStateWithLin {
                           const Eigen::Vector3<Scalar>& ba) {
     state_linearized.bias_gyro = bg;
     state_linearized.bias_accel = ba;
-    state_linearized.vel_w_i = d_rot.transpose() * vel;
+//    state_linearized.vel_w_i = d_rot.transpose() * vel;
   }
 
   void applyInc(const VecN& inc) {

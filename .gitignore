@@ -6,3 +6,6 @@ scripts/eval/eval_*
 scripts/eval_full/eval_*
 stats_*.*json
 __pycache__
+result*
+result/tumvi
+result.tar.gz

@@ -170,7 +170,8 @@ void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::
 
 void callback_lidar(const sensor_msgs::PointCloud2ConstPtr &msg) {
 //  std::cout << "callback_lidar" << std::endl;
-  const double blind = 0.1;
+  const double blind_min = 0.1;
+  const double blind_max = 150.0;
   const int point_filter_num = 1;
 
   basalt::LidarData::Ptr data(new basalt::LidarData);
@@ -191,7 +192,7 @@ void callback_lidar(const sensor_msgs::PointCloud2ConstPtr &msg) {
     double range = std::sqrt(pl_orig.points[i].x * pl_orig.points[i].x +
                              pl_orig.points[i].y * pl_orig.points[i].y +
                              pl_orig.points[i].z * pl_orig.points[i].z);
-    if (range < blind) {
+    if (range < blind_min || range > blind_max) {
       continue;
     }
     if (i % point_filter_num == 0) {

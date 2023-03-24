@@ -150,15 +150,18 @@ void NfrMapper::processMargData(MargData& m) {
 
 bool NfrMapper::extractNonlinearFactors(MargData& m) {
   size_t asize = m.aom.total_size;
-  // std::cout << "asize " << asize << std::endl;
+  std::cout << "asize " << asize << std::endl;
 
   Eigen::FullPivHouseholderQR<Eigen::MatrixXd> qr(m.abs_H);
   if (qr.rank() != m.abs_H.cols()) return false;
 
+  /// covariance
   Eigen::MatrixXd cov_old = qr.solve(Eigen::MatrixXd::Identity(asize, asize));
 
   int64_t kf_id = *m.kfs_to_marg.cbegin();
   int kf_start_idx = m.aom.abs_order_map.at(kf_id).first;
+
+  std::cout << "kf_start_idx: " << kf_start_idx << std::endl;
 
   auto state_kf = m.frame_poses.at(kf_id);
 
@@ -197,6 +200,7 @@ bool NfrMapper::extractNonlinearFactors(MargData& m) {
       rpf.cov_inv.setIdentity();
     }
 
+    /// r_rp
     if (m.use_imu) {
       roll_pitch_factors.emplace_back(rpf);
     }
@@ -235,6 +239,7 @@ bool NfrMapper::extractNonlinearFactors(MargData& m) {
 
     // std::cout << "rpf.cov_inv\n" << rpf.cov_inv << std::endl;
 
+    /// r_rel
     rel_pose_factors.emplace_back(rpf);
   }
 

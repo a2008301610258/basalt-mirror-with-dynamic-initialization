@@ -1,0 +1,7 @@
+./basalt_vio_ros --cam-calib /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/t265_ds_calib.json --dataset-type euroc --config-path /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/t265_config.json --use-double 1
+
+./basalt_vio_ros --cam-calib /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/tumvi_512_ds_calib.json --dataset-type euroc --config-path /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/tumvi_512_config.json --use-double 1
+
+./basalt_fusion_ros --cam-calib /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/tumvi_512_ds_calib.json --dataset-type euroc --config-path /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/tumvi_512_config.json --use-double 1
+
+./basalt_fusion_ros --cam-calib /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/t265_ds_calib.json --dataset-type euroc --config-path /home/zhihui/Projects/SLAM/basalt-mirror-with-dynamic-initialization/data/t265_config.json --use-double 1
